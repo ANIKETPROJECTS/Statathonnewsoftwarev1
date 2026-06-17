@@ -302,14 +302,21 @@ export function profileData(
     const norm = normalizeColName(name);
 
     // ── Determine variable kind ──────────────────────────────────────────
-    // Rule 1: exactly 1 unique value → system-generated → NOT questionnaire
-    // Rule 2: frame/system vocabulary → NOT questionnaire
-    // Rule 3: multiplier/weight → NOT questionnaire
-    // Rule 4: everything else → questionnaire variable
-    const isSystemGenerated = uniqueCount === 1 && nonNullValues.length > 0;
-    const isFrame = isFrameOrSystemVar(norm);
+    // Priority order:
+    // 0. If column is explicitly in HCES dict or user mapping → ALWAYS questionnaire
+    //    (overrides Rule 1: a questionnaire field stays a questionnaire field even
+    //     if all values happen to be the same in this particular dataset)
+    // 1. Multiplier/weight column → frame/system → NOT questionnaire
+    // 2. Frame/design vocabulary → NOT questionnaire
+    // 3. Exactly 1 unique value AND not in dict → system-generated → NOT questionnaire
+    // 4. Everything else → questionnaire variable
+
     const isMult = isMultiplierColumn(name, isLast);
-    const isQuestionnaire = !isSystemGenerated && !isFrame && !isMult;
+    const isFrame = isFrameOrSystemVar(norm);
+    const inDict = !!(userQRefMap[norm] || HCES_QREF[norm]);
+    const isSystemGenerated = !inDict && uniqueCount === 1 && nonNullValues.length > 0;
+
+    const isQuestionnaire = inDict || (!isMult && !isFrame && !isSystemGenerated);
 
     // Resolve Sec / Item / Col
     let qref: QRef = { sec: "", item: "", col: "" };
