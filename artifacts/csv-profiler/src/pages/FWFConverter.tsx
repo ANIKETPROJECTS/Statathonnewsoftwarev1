@@ -1,8 +1,8 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Upload, FileText, FileSpreadsheet, CheckCircle2, AlertTriangle,
   X, ArrowRight, Download, Eye, Layers, RotateCcw,
-  Key, Lock, Shuffle, LockOpen, Search,
+  Key, Lock, Shuffle, LockOpen, Search, Columns2, Loader2,
 } from "lucide-react";
 import {
   parseLayoutFile, readExcelFileInfo, getSheetRowCount, convertFWFToCSV,
@@ -60,6 +60,11 @@ export default function FWFConverter() {
 
   const [origDownloading, setOrigDownloading] = useState(false);
   const [origProgress, setOrigProgress] = useState(0);
+
+  // Side-by-side compare
+  const [showCompare, setShowCompare] = useState(false);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareData, setCompareData] = useState<{ headers: string[]; original: string[][]; anonymized: string[][] } | null>(null);
 
   const [decryptFileName, setDecryptFileName] = useState("");
   const [decryptCsvText, setDecryptCsvText] = useState<string | null>(null);
@@ -206,6 +211,38 @@ export default function FWFConverter() {
       triggerDownload(blob, `${outputBaseName}.csv`);
     } finally { setOrigDownloading(false); setOrigProgress(0); }
   }, [layoutResult, dataText, outputBaseName]);
+
+  const handleOpenCompare = useCallback(async () => {
+    if (!layoutResult || !dataText || !encResultBlob) return;
+    setCompareLoading(true);
+    setShowCompare(true);
+    try {
+      const MAX = 500;
+      const headers = layoutResult.fields.map((f) => f.varName);
+      const fwfLines = dataText.split(/\r?\n/).filter((l) => l.length > 0);
+      const original = fwfLines.slice(0, MAX).map((line) =>
+        layoutResult.fields.map((f) => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
+      );
+      const anonText = await encResultBlob.text();
+      const anonLines = anonText.split(/\r?\n/).filter((l) => l.length > 0);
+      const parseCSVLine = (line: string): string[] => {
+        const cells: string[] = [];
+        let cur = ""; let inQ = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"') { inQ = !inQ; }
+          else if (ch === ',' && !inQ) { cells.push(cur); cur = ""; }
+          else { cur += ch; }
+        }
+        cells.push(cur);
+        return cells;
+      };
+      const anonymized = anonLines.slice(1, MAX + 1).map(parseCSVLine);
+      setCompareData({ headers, original, anonymized });
+    } finally {
+      setCompareLoading(false);
+    }
+  }, [layoutResult, dataText, encResultBlob]);
 
   const handleCopyKey = (k: string) => {
     navigator.clipboard.writeText(k).then(() => {
@@ -538,6 +575,10 @@ export default function FWFConverter() {
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 text-white text-base font-semibold hover:bg-emerald-700 transition-colors">
                       <Download className="w-4 h-4" />Download anonymized CSV
                     </button>
+                    <button onClick={handleOpenCompare}
+                      className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
+                      <Columns2 className="w-4 h-4" />View side by side
+                    </button>
                     <button onClick={handleDownloadOriginal} disabled={origDownloading}
                       className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors">
                       {origDownloading ? <><Spin />Building…</> : <><Download className="w-4 h-4" />Download original CSV</>}
@@ -603,6 +644,171 @@ export default function FWFConverter() {
             </div>
           )}
           </div>{/* end p-6 content */}
+        </div>
+      )}
+      {/* Side-by-side compare modal */}
+      {showCompare && (
+        <SideBySideModal
+          loading={compareLoading}
+          data={compareData}
+          totalRows={dataLineCount}
+          onClose={() => { setShowCompare(false); setCompareData(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Side-by-side compare modal ────────────────────────────────────────────────
+
+function SideBySideModal({ loading, data, totalRows, onClose }: {
+  loading: boolean;
+  data: { headers: string[]; original: string[][]; anonymized: string[][] } | null;
+  totalRows: number;
+  onClose: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const leftRef = useRef<HTMLDivElement>(null);
+  const rightRef = useRef<HTMLDivElement>(null);
+
+  // Sync horizontal scroll between both panes
+  const syncScroll = (src: "left" | "right") => (e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    const other = src === "left" ? rightRef.current : leftRef.current;
+    if (other) other.scrollLeft = target.scrollLeft;
+  };
+
+  // Close on Escape key
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const filteredHeaders = data
+    ? (search.trim() ? data.headers.filter((h) => h.toLowerCase().includes(search.trim().toLowerCase())) : data.headers)
+    : [];
+  const filteredIdxs = data
+    ? data.headers.map((h, i) => ({ h, i })).filter(({ h }) => !search.trim() || h.toLowerCase().includes(search.trim().toLowerCase())).map(({ i }) => i)
+    : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-white" style={{ fontFamily: "'Poppins', sans-serif" }}>
+      {/* Header */}
+      <div className="flex items-center gap-4 px-6 py-4 border-b border-gray-200 bg-white flex-shrink-0">
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <Columns2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+          <div>
+            <h2 className="text-lg font-semibold text-black leading-tight">Original vs Anonymized</h2>
+            <p className="text-sm text-gray-500">
+              {data ? `Showing ${data.original.length.toLocaleString()} of ${totalRows.toLocaleString()} rows · ${data.headers.length} columns` : "Loading…"}
+              {totalRows > 500 && data && <span className="ml-1 text-amber-600">(preview capped at 500 rows)</span>}
+            </p>
+          </div>
+        </div>
+        <div className="relative w-64 flex-shrink-0">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+          <input
+            type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter columns…"
+            className="w-full pl-9 pr-4 py-2 text-sm rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-black"
+          />
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0 text-sm">
+          <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 font-medium">
+            <span className="w-3 h-3 rounded-sm bg-amber-300 inline-block" />Changed
+          </span>
+          <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 font-medium">
+            <span className="w-3 h-3 rounded-sm bg-white border border-gray-300 inline-block" />Unchanged
+          </span>
+        </div>
+        <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-black transition-colors flex-shrink-0">
+          <X className="w-5 h-5" />
+        </button>
+      </div>
+
+      {loading && (
+        <div className="flex-1 flex items-center justify-center gap-3 text-gray-500">
+          <Loader2 className="w-6 h-6 animate-spin text-emerald-500" />
+          <span className="text-base font-medium">Building comparison…</span>
+        </div>
+      )}
+
+      {!loading && data && (
+        <div className="flex-1 flex min-h-0 divide-x divide-gray-200">
+          {/* Original pane */}
+          <div className="flex-1 flex flex-col min-w-0">
+            <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 flex items-center gap-2 flex-shrink-0">
+              <span className="text-sm font-semibold text-black">Original</span>
+              <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full">{data.original.length.toLocaleString()} rows</span>
+            </div>
+            <div ref={leftRef} className="flex-1 overflow-auto" onScroll={syncScroll("left")}>
+              <table className="text-xs border-collapse w-max min-w-full">
+                <thead className="sticky top-0 bg-gray-50 z-10">
+                  <tr>
+                    <th className="sticky left-0 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-500 border-r border-b border-gray-200 whitespace-nowrap">#</th>
+                    {filteredHeaders.map((h) => (
+                      <th key={h} className="px-3 py-2 text-left font-semibold text-gray-500 border-r border-b border-gray-200 whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.original.map((row, ri) => (
+                    <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
+                      <td className="sticky left-0 px-3 py-1.5 text-gray-400 font-mono border-r border-gray-100 whitespace-nowrap" style={{ background: ri % 2 === 0 ? "white" : "rgb(249 250 251 / 0.5)" }}>{ri + 1}</td>
+                      {filteredIdxs.map((ci) => {
+                        const origVal = row[ci] ?? "";
+                        const anonVal = data.anonymized[ri]?.[ci] ?? "";
+                        const changed = origVal !== anonVal;
+                        return (
+                          <td key={ci} className={`px-3 py-1.5 font-mono border-r border-gray-100 whitespace-nowrap ${changed ? "bg-amber-50 text-amber-900" : ""}`}>
+                            {origVal || <span className="text-gray-300">—</span>}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Anonymized pane */}
+          <div className="flex-1 flex flex-col min-w-0">
+            <div className="px-4 py-2.5 bg-emerald-50 border-b border-gray-200 flex items-center gap-2 flex-shrink-0">
+              <span className="text-sm font-semibold text-emerald-800">Anonymized</span>
+              <span className="text-xs text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">{data.anonymized.length.toLocaleString()} rows</span>
+            </div>
+            <div ref={rightRef} className="flex-1 overflow-auto" onScroll={syncScroll("right")}>
+              <table className="text-xs border-collapse w-max min-w-full">
+                <thead className="sticky top-0 bg-emerald-50/80 z-10 backdrop-blur-sm">
+                  <tr>
+                    <th className="sticky left-0 bg-emerald-50 px-3 py-2 text-left font-semibold text-emerald-700 border-r border-b border-gray-200 whitespace-nowrap">#</th>
+                    {filteredHeaders.map((h) => (
+                      <th key={h} className="px-3 py-2 text-left font-semibold text-emerald-700 border-r border-b border-gray-200 whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.anonymized.map((row, ri) => (
+                    <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
+                      <td className="sticky left-0 px-3 py-1.5 text-gray-400 font-mono border-r border-gray-100 whitespace-nowrap" style={{ background: ri % 2 === 0 ? "white" : "rgb(249 250 251 / 0.5)" }}>{ri + 1}</td>
+                      {filteredIdxs.map((ci) => {
+                        const origVal = data.original[ri]?.[ci] ?? "";
+                        const anonVal = row[ci] ?? "";
+                        const changed = origVal !== anonVal;
+                        return (
+                          <td key={ci} className={`px-3 py-1.5 font-mono border-r border-gray-100 whitespace-nowrap ${changed ? "bg-amber-100 text-amber-900 font-semibold" : ""}`}>
+                            {anonVal || <span className="text-gray-300">—</span>}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
     </div>
