@@ -268,9 +268,9 @@ export default function FWFConverter() {
         <StepBadge n={3} label="Convert & download" active={step === "done"} done={false} />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1fr]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1fr] min-w-0">
         {/* ── Step 1: Layout file ─────────────────────────────────────────── */}
-        <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+        <div className="bg-card border border-border rounded-xl p-5 space-y-4 min-w-0 overflow-hidden">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-foreground">Step 1 — Layout file</h2>
@@ -475,7 +475,7 @@ export default function FWFConverter() {
         </div>
 
         {/* ── Step 2 + 3: Data file & Convert ─────────────────────────────── */}
-        <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+        <div className="bg-card border border-border rounded-xl p-5 space-y-4 min-w-0 overflow-hidden">
           <div>
             <h2 className="text-sm font-semibold text-foreground">Step 2 — Fixed-width data file</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
