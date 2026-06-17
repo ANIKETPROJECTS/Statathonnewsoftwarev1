@@ -162,32 +162,7 @@ export default function Home() {
     : 0;
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border bg-card px-6 py-4">
-        <div className="max-w-[1400px] mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-              <BarChart2 className="w-4 h-4 text-primary-foreground" />
-            </div>
-            <div>
-              <h1 className="text-base font-semibold text-foreground leading-tight">CSV Data Profiler</h1>
-              <p className="text-xs text-muted-foreground">Auto-generate data layout tables from any CSV file</p>
-            </div>
-          </div>
-          {profile && (
-            <button
-              onClick={handleReset}
-              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <X className="w-4 h-4" />
-              Load new file
-            </button>
-          )}
-        </div>
-      </header>
-
-      <main className="max-w-[1400px] mx-auto px-6 py-6">
+    <div>
         {/* Upload area */}
         {!profile && !isLoading && (
           <div className="flex flex-col items-center justify-center min-h-[60vh]">
@@ -412,7 +387,6 @@ export default function Home() {
             )}
           </div>
         )}
-      </main>
-    </div>
+      </div>
   );
 }
