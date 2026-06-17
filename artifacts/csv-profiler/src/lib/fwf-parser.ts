@@ -125,7 +125,8 @@ function rowToFieldDef(
 
 export function getExcelSheetNames(buf: ArrayBuffer): string[] {
   const wb = XLSX.read(buf, { type: "array" });
-  return wb.SheetNames;
+  const sheetMeta: { Hidden?: number }[] = wb.Workbook?.Sheets ?? [];
+  return wb.SheetNames.filter((_, i) => !sheetMeta[i]?.Hidden);
 }
 
 // ── Get row count for a specific sheet ───────────────────────────────────────
