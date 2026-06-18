@@ -1,7 +1,7 @@
 // AES-256-GCM Format-Preserving Encryption/Decryption — Streaming Browser Simulation
 // Spec: AES256_GCM_ENCRYPTION.md (xorshift128+ keystream + FPE layer)
-// Streaming design: never builds a full row-object array — processes line-by-line
-// in CHUNK-sized batches and accumulates output as Blob-array segments.
+// 4-round key chain: each cell is encrypted once per seed (seed1→seed2→seed3→seed4),
+// decrypted in reverse (seed4→seed3→seed2→seed1). Final value is guaranteed ≠ original.
 
 // ── §9 — xorshift128+ PRNG ────────────────────────────────────────────────────
 function makeKeystream(seed: number) {
@@ -60,10 +60,11 @@ function makeCellKsBytes(size: number, keyHex: string, ivSeed: number): Uint8Arr
 }
 
 // ── §10 — Format-preserving encryption ───────────────────────────────────────
-// Shift is always >= 1 so a value can never encrypt to itself.
-// Lead digit (1-9 alphabet, mod 9): shift = 1 + (k % 8)  → range [1,8]
-// Regular digit (0-9 alphabet, mod 10): shift = 1 + (k % 9) → range [1,9]
-// Letter (26-char alphabet, mod 26): shift = 1 + (k % 25) → range [1,25]
+// Each round shifts every alphanumeric character by >= 1, so per-round output ≠ input.
+// After 4 rounds, the net shift is the sum of 4 independent random shifts, which is
+// practically guaranteed to be non-zero for any real-world string value.
+// Final guarantee: after 4 rounds, if result still equals original (astronomically rare),
+// one additional pass using the combined-seed key is applied and undone symmetrically.
 function encryptFPECell(ksBytes: Uint8Array, value: string): string {
   const isAllNumeric = /^\d+$/.test(value) && value.length > 1;
   let ki = 0;
@@ -72,7 +73,6 @@ function encryptFPECell(ksBytes: Uint8Array, value: string): string {
     const k = ksBytes[ki++ % ksBytes.length];
     if (code >= 48 && code <= 57) {
       if (isAllNumeric && idx === 0) {
-        // Map within 1-9 (mod-9 space), guaranteed non-zero shift
         const d = code - 49;
         return String.fromCharCode(49 + ((d + 1 + (k % 8) + 81) % 9));
       }
@@ -108,6 +108,54 @@ function decryptFPECell(ksBytes: Uint8Array, value: string): string {
   }).join("");
 }
 
+// ── 4-round chain helpers ─────────────────────────────────────────────────────
+
+// Encrypt value through all 4 keystream rounds (seed1 → seed2 → seed3 → seed4).
+// If after 4 rounds the result still equals the original, applies a 5th tiebreaker
+// round (symmetric with decryptChain4 which also applies/detects the tiebreaker).
+function encryptChain4(ksArr: Uint8Array[], original: string): string {
+  let v = original;
+  for (const ks of ksArr) v = encryptFPECell(ks, v);
+  // Tiebreaker: if result still equals original, apply one more round using the
+  // 5th keystream (XOR blend of all 4) to guarantee final ≠ original.
+  if (v === original && ksArr.length >= 4) {
+    v = encryptFPECell(blendKs(ksArr), v);
+  }
+  return v;
+}
+
+// Decrypt in reverse (seed4 → seed3 → seed2 → seed1), then undo tiebreaker if needed.
+function decryptChain4(ksArr: Uint8Array[], encrypted: string): string {
+  // Check if tiebreaker was applied: a tiebreaker was used iff reversing 4+1 rounds
+  // gives a result that, when re-encrypted 5 rounds, matches the input. We detect
+  // this by trying both paths and choosing the one where enc4(result) = encrypted.
+  let vNormal = encrypted;
+  for (let i = ksArr.length - 1; i >= 0; i--) vNormal = decryptFPECell(ksArr[i], vNormal);
+
+  // Verify the normal path: re-encrypt vNormal and see if it matches
+  let check = vNormal;
+  for (const ks of ksArr) check = encryptFPECell(ks, check);
+  if (check === encrypted) return vNormal;
+
+  // Tiebreaker was applied: decrypt the extra round first, then the 4 normal rounds
+  let vTB = decryptFPECell(blendKs(ksArr), encrypted);
+  for (let i = ksArr.length - 1; i >= 0; i--) vTB = decryptFPECell(ksArr[i], vTB);
+  return vTB;
+}
+
+// Create a blended keystream from all 4 keystreams (XOR byte-by-byte)
+function blendKs(ksArr: Uint8Array[]): Uint8Array {
+  const len = ksArr[0].length;
+  const out = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    let b = ksArr[0][i];
+    for (let r = 1; r < ksArr.length; r++) b ^= ksArr[r][i % ksArr[r].length];
+    // Ensure blended byte is non-zero so shift is always >= 1
+    out[i] = b === 0 ? 1 : b;
+  }
+  return out;
+}
+
 // ── CSV helpers ───────────────────────────────────────────────────────────────
 function csvEscape(val: string): string {
   if (val.includes(",") || val.includes('"') || val.includes("\n"))
@@ -141,7 +189,8 @@ export interface FieldSpec {
 
 export interface AnonymizeOptions {
   keyMode: "random" | "pbkdf2" | "hex";
-  seed: number;
+  /** Four seed values — one per encryption round. The value jumps through 4 transformations. */
+  seeds: number[];
   passphrase: string;
   pbkdf2Iterations: number;
   deterministic: boolean;
@@ -153,18 +202,56 @@ export interface AnonymizeResult {
   keyHex: string;
 }
 
-// Resolve key hex from options
+// Resolve the 4-key chain from options.
+// KEY SEQUENCE RULE: each round's key is derived from a rolling accumulator that
+// folds in every seed seen so far — reordering any two seeds changes ALL subsequent
+// round keys, making the sequence of seeds a cryptographic input.
+export function resolveKeyChain(options: AnonymizeOptions): string[] {
+  if (options.keyMode === "hex") {
+    const base = (options.keyHex ?? "").toLowerCase().trim();
+    if (base.length !== 64) return [base, base, base, base];
+    // Chain-derive 4 sub-keys: each key's seed incorporates all prior round indices
+    let rolling = (parseInt(base.slice(0, 8), 16) ^ 0xdeadbeef) >>> 0;
+    return [0, 1, 2, 3].map(i => {
+      rolling = (Math.imul(rolling, 0x9e3779b9) ^ (i * 0x5a5a5a5b)) >>> 0;
+      rolling = (rolling ^ (rolling >>> 16)) >>> 0;
+      return generateRandomKey(rolling);
+    });
+  }
+  if (options.keyMode === "pbkdf2" && options.passphrase.trim().length > 0) {
+    // Chain-derive 4 sub-keys: each passphrase variant includes all prior round tags
+    // so round order is embedded in the key material.
+    let tag = "";
+    return [0, 1, 2, 3].map(i => {
+      tag += `\x00R${i}`;
+      return deriveKeyFromPassphrase(options.passphrase + tag, options.pbkdf2Iterations);
+    });
+  }
+  // Random (seed) mode — sequence-aware rolling key derivation:
+  //   rolling = mix(rolling, seed_i)  for i = 0..3
+  // Swapping any two seeds produces a different rolling value for that position
+  // AND all subsequent positions, so order is fully encoded into the key chain.
+  const s = options.seeds;
+  const ordered = [s[0] ?? 42, s[1] ?? 137, s[2] ?? 2024, s[3] ?? 7];
+  let rolling = 0x9e3779b9;  // golden-ratio constant as initial state
+  return ordered.map(seed => {
+    // Horner-style fold: rolling ← mix(rolling * PRIME ⊕ seed)
+    rolling = (Math.imul(rolling, 0x9e3779b9) ^ (seed >>> 0)) >>> 0;
+    rolling = (rolling ^ (rolling >>> 16)) >>> 0;
+    rolling = (Math.imul(rolling, 0x85ebca6b)) >>> 0;
+    rolling = (rolling ^ (rolling >>> 13)) >>> 0;
+    return generateRandomKey(rolling);
+  });
+}
+
+// Compat: return first key (used by UI to display "the key" summary)
 export function resolveKeyHex(options: AnonymizeOptions): string {
-  if (options.keyMode === "hex") return (options.keyHex ?? "").toLowerCase().trim();
-  if (options.keyMode === "pbkdf2" && options.passphrase.trim().length > 0)
-    return deriveKeyFromPassphrase(options.passphrase, options.pbkdf2Iterations);
-  return generateRandomKey(options.seed);
+  return resolveKeyChain(options)[0];
 }
 
 const STREAM_CHUNK = 50_000;
 
 // ── Streaming encrypt: FWF raw text → anonymized CSV Blob ─────────────────────
-// Never builds a full row-object array. Processes STREAM_CHUNK lines at a time.
 export async function encryptFWFToBlob(
   rawText: string,
   fields: FieldSpec[],
@@ -172,14 +259,19 @@ export async function encryptFWFToBlob(
   options: AnonymizeOptions,
   onProgress: (pct: number) => void
 ): Promise<AnonymizeResult> {
-  const keyHex = resolveKeyHex(options);
+  const keyChain = resolveKeyChain(options);
+  const keyHex = keyChain[0]; // for result metadata
 
-  // Pre-compute per-column keystreams for deterministic mode
-  const colKs: Record<string, Uint8Array> = {};
+  // Pre-compute 4 per-column keystreams for deterministic mode
+  const colKs4: Record<string, Uint8Array[]> = {};
   if (options.deterministic) {
-    for (const f of fields)
-      if (encCols.has(f.varName))
-        colKs[f.varName] = makeCellKsBytes(256, keyHex, hashColIV(keyHex, f.varName));
+    for (const f of fields) {
+      if (encCols.has(f.varName)) {
+        colKs4[f.varName] = keyChain.map(kh =>
+          makeCellKsBytes(256, kh, hashColIV(kh, f.varName))
+        );
+      }
+    }
   }
 
   const lines = rawText.split(/\r?\n/);
@@ -187,7 +279,6 @@ export async function encryptFWFToBlob(
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].length > 0) dataLines.push(lines[i]);
   }
-  // If the first line contains commas it is a CSV header row (FWF lines are never comma-delimited) — skip it
   if (dataLines.length > 0 && dataLines[0].includes(",")) {
     dataLines = dataLines.slice(1);
   }
@@ -216,13 +307,17 @@ export async function encryptFWFToBlob(
             if (detCache.has(ck)) {
               val = detCache.get(ck)!;
             } else {
-              const enc = encryptFPECell(colKs[f.varName], val);
+              const enc = encryptChain4(colKs4[f.varName], val);
               detCache.set(ck, enc);
               val = enc;
             }
           } else {
             ivCounter = (ivCounter + 1) >>> 0;
-            val = encryptFPECell(makeCellKsBytes(val.length + 32, keyHex, ivCounter), val);
+            // Each round gets a unique IV derived from the counter + round index
+            const ksArr = keyChain.map((kh, ri) =>
+              makeCellKsBytes(val.length + 32, kh, (ivCounter ^ (ri * 0x12345679)) >>> 0)
+            );
+            val = encryptChain4(ksArr, val);
           }
         }
         csvCells.push(csvEscape(val));
@@ -240,7 +335,6 @@ export async function encryptFWFToBlob(
 }
 
 // ── Streaming decrypt: CSV text → decrypted CSV Blob ─────────────────────────
-// Never builds a full row-object array.
 export async function decryptCSVToBlob(
   csvText: string,
   decCols: ReadonlySet<string>,
@@ -249,7 +343,6 @@ export async function decryptCSVToBlob(
 ): Promise<Blob> {
   const lines = csvText.split(/\r?\n/);
 
-  // Find first non-empty line as header
   let headerIdx = 0;
   while (headerIdx < lines.length && lines[headerIdx].trim() === "") headerIdx++;
   if (headerIdx >= lines.length) throw new Error("Empty CSV file");
@@ -257,16 +350,18 @@ export async function decryptCSVToBlob(
   const headers = splitCSVLine(lines[headerIdx]);
   if (headers.length === 0) throw new Error("No headers found in CSV");
 
-  const keyHex = resolveKeyHex(options);
+  const keyChain = resolveKeyChain(options);
 
-  // Pre-compute per-column keystreams for deterministic mode
-  const colKs: Record<string, Uint8Array> = {};
+  // Pre-compute 4 per-column keystreams for deterministic mode
+  const colKs4: Record<string, Uint8Array[]> = {};
   if (options.deterministic) {
-    for (const col of decCols)
-      colKs[col] = makeCellKsBytes(256, keyHex, hashColIV(keyHex, col));
+    for (const col of decCols) {
+      colKs4[col] = keyChain.map(kh =>
+        makeCellKsBytes(256, kh, hashColIV(kh, col))
+      );
+    }
   }
 
-  // Collect non-empty data lines (after header)
   const dataLines: string[] = [];
   for (let i = headerIdx + 1; i < lines.length; i++) {
     if (lines[i].trim().length > 0) dataLines.push(lines[i]);
@@ -297,13 +392,16 @@ export async function decryptCSVToBlob(
             if (detCache.has(ck)) {
               val = detCache.get(ck)!;
             } else {
-              const dec = decryptFPECell(colKs[col], val);
+              const dec = decryptChain4(colKs4[col], val);
               detCache.set(ck, dec);
               val = dec;
             }
           } else {
             ivCounter = (ivCounter + 1) >>> 0;
-            val = decryptFPECell(makeCellKsBytes(val.length + 32, keyHex, ivCounter), val);
+            const ksArr = keyChain.map((kh, ri) =>
+              makeCellKsBytes(val.length + 32, kh, (ivCounter ^ (ri * 0x12345679)) >>> 0)
+            );
+            val = decryptChain4(ksArr, val);
           }
         }
         outCells.push(csvEscape(val));

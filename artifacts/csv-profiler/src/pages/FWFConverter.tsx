@@ -105,7 +105,7 @@ export default function FWFConverter() {
   // Global key settings (shared across all file encryptions)
   const [anonMode, setAnonMode] = useState<AnonMode>("encrypt");
   const [anonKeyMode, setAnonKeyMode] = useState<"random" | "pbkdf2" | "hex">("random");
-  const [anonSeed, setAnonSeed] = useState(42);
+  const [anonSeeds, setAnonSeeds] = useState<number[]>([42, 137, 2024, 7]);
   const [anonPassphrase, setAnonPassphrase] = useState("");
   const [anonPbkdf2Iter, setAnonPbkdf2Iter] = useState(100_000);
   const [anonDeterministic, setAnonDeterministic] = useState(true);
@@ -135,7 +135,7 @@ export default function FWFConverter() {
   const decryptInputRef = useRef<HTMLInputElement>(null);
 
   const buildOpts = (): AnonymizeOptions => ({
-    keyMode: anonKeyMode, seed: anonSeed,
+    keyMode: anonKeyMode, seeds: anonSeeds,
     passphrase: anonPassphrase, pbkdf2Iterations: anonPbkdf2Iter,
     deterministic: anonDeterministic, keyHex: anonKeyHexInput,
   });
@@ -299,7 +299,7 @@ export default function FWFConverter() {
     } catch (e) {
       patchFile(setDataFiles, dfId, { encError: `Encryption failed: ${(e as Error).message}`, encRunning: false });
     }
-  }, [dataFiles, layouts, anonKeyMode, anonSeed, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonKeyHexInput]);
+  }, [dataFiles, layouts, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonKeyHexInput]);
 
   const handleDownloadOriginal = useCallback(async (dfId: string) => {
     const df = dataFiles.find(d => d.id === dfId);
@@ -366,7 +366,7 @@ export default function FWFConverter() {
       setDecryptBlob(blob);
     } catch (e) { setDecryptError(`Decryption failed: ${(e as Error).message}`); }
     finally { setDecryptRunning(false); }
-  }, [decryptCsvText, decryptCols, anonKeyMode, anonSeed, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonKeyHexInput]);
+  }, [decryptCsvText, decryptCols, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonKeyHexInput]);
 
   const handleOpenDecryptCompare = useCallback(async () => {
     if (!decryptCsvText || !decryptBlob) return;
@@ -393,7 +393,7 @@ export default function FWFConverter() {
   const readyLayouts = layouts.filter(l => l.result !== null);
   const assignedFiles = dataFiles.filter(df => df.layoutId !== "");
   const activatedFiles = dataFiles.filter(df => df.activated);
-  const keyModeLabel = anonKeyMode === "random" ? `seed = ${anonSeed}` : anonKeyMode === "pbkdf2" ? `PBKDF2 (${anonPbkdf2Iter.toLocaleString()} iter)` : "raw hex key";
+  const keyModeLabel = anonKeyMode === "random" ? `seeds = [${anonSeeds.join(", ")}]` : anonKeyMode === "pbkdf2" ? `PBKDF2 (${anonPbkdf2Iter.toLocaleString()} iter)` : "raw hex key";
 
   const phase = readyLayouts.length === 0 ? 0 : assignedFiles.length === 0 ? 1 : 2;
 
@@ -531,7 +531,7 @@ export default function FWFConverter() {
           <div className="p-6">
             <KeySettings
               keyMode={anonKeyMode} setKeyMode={setAnonKeyMode}
-              seed={anonSeed} setSeed={setAnonSeed}
+              seeds={anonSeeds} setSeeds={setAnonSeeds}
               passphrase={anonPassphrase} setPassphrase={setAnonPassphrase}
               pbkdf2Iter={anonPbkdf2Iter} setPbkdf2Iter={setAnonPbkdf2Iter}
               deterministic={anonDeterministic} setDeterministic={setAnonDeterministic}
@@ -1023,72 +1023,113 @@ function SideBySideModal({ loading, data, totalRows, leftLabel = "Original", rig
 
 // ── KeySettings ───────────────────────────────────────────────────────────────
 
-function KeySettings({ keyMode, setKeyMode, seed, setSeed, passphrase, setPassphrase, pbkdf2Iter, setPbkdf2Iter, deterministic, setDeterministic, keyHexInput, setKeyHexInput }: {
+function KeySettings({ keyMode, setKeyMode, seeds, setSeeds, passphrase, setPassphrase, pbkdf2Iter, setPbkdf2Iter, deterministic, setDeterministic, keyHexInput, setKeyHexInput }: {
   keyMode: "random" | "pbkdf2" | "hex"; setKeyMode: (m: "random" | "pbkdf2" | "hex") => void;
-  seed: number; setSeed: (n: number) => void;
+  seeds: number[]; setSeeds: (s: number[]) => void;
   passphrase: string; setPassphrase: (s: string) => void;
   pbkdf2Iter: number; setPbkdf2Iter: (n: number) => void;
   deterministic: boolean; setDeterministic: (b: boolean) => void;
   keyHexInput: string; setKeyHexInput: (s: string) => void;
 }) {
+  const setSeed = (i: number, val: number) => {
+    const next = [...seeds];
+    next[i] = val;
+    setSeeds(next);
+  };
+
+  const SEED_LABELS = ["Seed 1", "Seed 2", "Seed 3", "Seed 4"];
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 pt-4 border-t border-gray-100">
-      <div className="space-y-3">
-        <p className="text-sm font-semibold text-black flex items-center gap-2"><Key className="w-4 h-4" />Key derivation</p>
-        <div className="space-y-2">
-          {(["random", "pbkdf2", "hex"] as const).map(m => (
-            <label key={m} className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border cursor-pointer text-sm transition-colors ${keyMode === m ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500"}`}>
-              <input type="radio" name="keymode" checked={keyMode === m} onChange={() => setKeyMode(m)} className="accent-blue-600" />
-              {m === "random" ? "Random (seed)" : m === "pbkdf2" ? "PBKDF2 passphrase" : "Paste hex key"}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div className="space-y-3">
-        <p className="text-sm font-semibold text-black">{keyMode === "random" ? "Key seed" : keyMode === "pbkdf2" ? "Passphrase" : "256-bit hex key"}</p>
-        {keyMode === "random" && (
-          <>
-            <input type="number" value={seed} onChange={e => setSeed(Number(e.target.value))}
-              className="w-full px-3 py-2.5 text-sm font-mono rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" />
-            <p className="text-sm text-gray-500">Same seed → same key (reproducible)</p>
-          </>
-        )}
-        {keyMode === "pbkdf2" && (
-          <div className="space-y-3">
-            <input type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} placeholder="Enter passphrase…"
-              className="w-full px-3 py-2.5 text-sm rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" />
-            <div>
-              <p className="text-sm text-gray-500 mb-1">Iterations: {pbkdf2Iter.toLocaleString()}</p>
-              <input type="range" min={10000} max={500000} step={10000} value={pbkdf2Iter} onChange={e => setPbkdf2Iter(Number(e.target.value))} className="w-full accent-blue-600" />
-            </div>
-          </div>
-        )}
-        {keyMode === "hex" && (
+    <div className="space-y-6 pt-4 border-t border-gray-100">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {/* Key derivation mode */}
+        <div className="space-y-3">
+          <p className="text-sm font-semibold text-black flex items-center gap-2"><Key className="w-4 h-4" />Key derivation</p>
           <div className="space-y-2">
-            <textarea value={keyHexInput} onChange={e => setKeyHexInput(e.target.value)} placeholder="Paste 64-char hex key…" rows={2}
-              className={`w-full px-3 py-2.5 text-xs font-mono rounded-xl border bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none text-black ${keyHexInput && keyHexInput.trim().length !== 64 ? "border-red-400" : "border-gray-200"}`} />
-            <p className={`text-sm ${keyHexInput.trim().length === 64 ? "text-emerald-600" : "text-gray-500"}`}>
-              {keyHexInput.trim().length === 64 ? "✓ Valid 256-bit key" : `${keyHexInput.trim().length}/64 hex chars`}
-            </p>
+            {(["random", "pbkdf2", "hex"] as const).map(m => (
+              <label key={m} className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border cursor-pointer text-sm transition-colors ${keyMode === m ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500"}`}>
+                <input type="radio" name="keymode" checked={keyMode === m} onChange={() => setKeyMode(m)} className="accent-blue-600" />
+                {m === "random" ? "Random (4 seeds)" : m === "pbkdf2" ? "PBKDF2 passphrase" : "Paste hex key"}
+              </label>
+            ))}
           </div>
-        )}
-      </div>
+        </div>
 
-      <div className="space-y-3">
-        <label className={`flex items-start gap-3 px-4 py-3 rounded-xl border cursor-pointer text-sm transition-colors ${deterministic ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500"}`}>
-          <input type="checkbox" checked={deterministic} onChange={e => setDeterministic(e.target.checked)} className="accent-blue-600 w-4 h-4 mt-0.5 flex-shrink-0" />
-          <div>
-            <p className="font-semibold">Deterministic mode</p>
-            <p className="text-xs mt-1 opacity-70">Same value → same output. Required for consistent round-trip.</p>
+        {/* Seed / passphrase / hex input */}
+        <div className="space-y-3">
+          <p className="text-sm font-semibold text-black">
+            {keyMode === "random" ? "4 Encryption Seeds" : keyMode === "pbkdf2" ? "Passphrase" : "256-bit hex key"}
+          </p>
+          {keyMode === "pbkdf2" && (
+            <div className="space-y-3">
+              <input type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} placeholder="Enter passphrase…"
+                className="w-full px-3 py-2.5 text-sm rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" />
+              <div>
+                <p className="text-sm text-gray-500 mb-1">Iterations: {pbkdf2Iter.toLocaleString()}</p>
+                <input type="range" min={10000} max={500000} step={10000} value={pbkdf2Iter} onChange={e => setPbkdf2Iter(Number(e.target.value))} className="w-full accent-blue-600" />
+              </div>
+            </div>
+          )}
+          {keyMode === "hex" && (
+            <div className="space-y-2">
+              <textarea value={keyHexInput} onChange={e => setKeyHexInput(e.target.value)} placeholder="Paste 64-char hex key…" rows={2}
+                className={`w-full px-3 py-2.5 text-xs font-mono rounded-xl border bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none text-black ${keyHexInput && keyHexInput.trim().length !== 64 ? "border-red-400" : "border-gray-200"}`} />
+              <p className={`text-sm ${keyHexInput.trim().length === 64 ? "text-emerald-600" : "text-gray-500"}`}>
+                {keyHexInput.trim().length === 64 ? "✓ Valid 256-bit key" : `${keyHexInput.trim().length}/64 hex chars`}
+              </p>
+            </div>
+          )}
+          {keyMode === "random" && (
+            <p className="text-xs text-gray-400">Same seeds → same keys (reproducible). Each seed generates an independent 256-bit key.</p>
+          )}
+        </div>
+
+        {/* Deterministic + cipher info */}
+        <div className="space-y-3">
+          <label className={`flex items-start gap-3 px-4 py-3 rounded-xl border cursor-pointer text-sm transition-colors ${deterministic ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500"}`}>
+            <input type="checkbox" checked={deterministic} onChange={e => setDeterministic(e.target.checked)} className="accent-blue-600 w-4 h-4 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="font-semibold">Deterministic mode</p>
+              <p className="text-xs mt-1 opacity-70">Same value → same output. Required for consistent round-trip.</p>
+            </div>
+          </label>
+          <div className="space-y-1 text-sm text-gray-500">
+            {[["Cipher", "AES-256-GCM"], ["Keys", "4 × 256-bit"], ["Rounds", "4-pass chain"], ["IV", "96-bit"], ["Std", "NIST FIPS 197"]].map(([k, v]) => (
+              <div key={k} className="flex gap-3"><span className="font-semibold text-black w-12 shrink-0">{k}</span><span>{v}</span></div>
+            ))}
           </div>
-        </label>
-        <div className="space-y-1 text-sm text-gray-500">
-          {[["Cipher", "AES-256-GCM"], ["Key", "256-bit"], ["IV", "96-bit"], ["Tag", "128-bit GHASH"], ["Std", "NIST FIPS 197"]].map(([k, v]) => (
-            <div key={k} className="flex gap-3"><span className="font-semibold text-black w-10 shrink-0">{k}</span><span>{v}</span></div>
-          ))}
         </div>
       </div>
+
+      {/* 4 seed inputs — shown when keyMode === "random" */}
+      {keyMode === "random" && (
+        <div className="border border-blue-100 rounded-xl bg-blue-50/40 p-4 space-y-3">
+          <div className="flex items-center gap-2 mb-1">
+            <Key className="w-3.5 h-3.5 text-blue-600" />
+            <p className="text-xs font-semibold text-blue-800 uppercase tracking-wide">4-Round Encryption Chain</p>
+            <span className="text-xs text-blue-500 ml-1">Value jumps: original → round 1 → round 2 → round 3 → round 4 = encrypted</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {SEED_LABELS.map((label, i) => (
+              <div key={i} className="space-y-1.5">
+                <label className="text-xs font-semibold text-blue-700 flex items-center gap-1">
+                  <span className="w-5 h-5 rounded-full bg-blue-600 text-white text-xs flex items-center justify-center font-bold flex-shrink-0">{i + 1}</span>
+                  {label}
+                </label>
+                <input
+                  type="number"
+                  value={seeds[i] ?? 0}
+                  onChange={e => setSeed(i, Number(e.target.value))}
+                  className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-blue-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                />
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-blue-600">
+            Each seed derives an independent 256-bit key. The encrypted output differs from the original after every round — the final value is guaranteed to be different from the source.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
