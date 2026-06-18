@@ -399,6 +399,10 @@ export default function FWFConverter() {
   return (
     <div className="space-y-8">
 
+      {/* Always-mounted hidden input for decrypt so the ref is never nulled out */}
+      <input ref={decryptInputRef} type="file" accept=".csv" className="hidden"
+        onChange={e => { const f = Array.from(e.target.files ?? []); if (f.length) handleDecryptFile(f[0]); e.target.value = ""; }} />
+
       {/* ── Step indicator ────────────────────────────────────────────────── */}
       <div className="flex items-center justify-center gap-3 flex-wrap">
         {(["Upload layouts", "Assign to data files", "Process & download"] as const).map((label, idx) => (
@@ -1162,8 +1166,6 @@ function DropZone({ accept, multiple, icon, label, sublabel, inputRef, onFiles }
       onDragLeave={() => setDragging(false)}
       onDrop={e => { e.preventDefault(); setDragging(false); const f = Array.from(e.dataTransfer.files); if (f.length) onFiles(f); }}
       onClick={() => inputRef.current?.click()}>
-      <input ref={inputRef} type="file" accept={accept} multiple={multiple} className="hidden"
-        onChange={e => { const f = Array.from(e.target.files ?? []); if (f.length) onFiles(f); e.target.value = ""; }} />
       <div className="flex flex-col items-center gap-4">
         <div className="flex items-center justify-center">{icon}</div>
         <div>
