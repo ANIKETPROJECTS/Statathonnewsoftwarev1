@@ -74,7 +74,8 @@ function matchColumns(
   origByLc.forEach((origName, lc) => {
     if (anonByLc.has(lc)) {
       const anonName = anonByLc.get(lc)!;
-      const renamed = origName !== anonName;
+      // Case-only differences (Survey_Name vs survey_name) are the same column — never "renamed"
+      const renamed = false;
 
       // Sample up to 2000 rows to compare value sets
       const SAMPLE = 2000;
