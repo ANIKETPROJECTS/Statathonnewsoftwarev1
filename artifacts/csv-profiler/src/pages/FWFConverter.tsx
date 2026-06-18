@@ -63,9 +63,9 @@ export default function FWFConverter() {
   const [origDownloading, setOrigDownloading] = useState(false);
   const [origProgress, setOrigProgress] = useState(0);
 
-  const [exportFormat, setExportFormat] = useState<ExportFormat>("csv");
-  const [exportDropOpen, setExportDropOpen] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [exportSelected, setExportSelected] = useState<Set<ExportFormat>>(new Set(["csv"]));
+  const [exportingFmt, setExportingFmt] = useState<Set<ExportFormat>>(new Set());
+  const [bulkExporting, setBulkExporting] = useState(false);
 
   // Side-by-side compare (encrypt)
   const [showCompare, setShowCompare] = useState(false);
@@ -609,52 +609,99 @@ export default function FWFConverter() {
                     <p className="text-sm text-amber-700">⚠ Same key decrypts. Store in a secure vault — never log or share.</p>
                   </div>
 
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    {/* Format download dropdown */}
-                    <div className="flex-1 relative">
-                      <div className="flex rounded-xl overflow-hidden border-2 border-emerald-600">
-                        <button
-                          disabled={exporting}
-                          onClick={async () => {
-                            if (!encResultBlob) return;
-                            setExporting(true);
-                            try {
-                              await exportAs(exportFormat, encResultBlob, outputBaseName, fields);
-                            } finally {
-                              setExporting(false);
-                            }
+                  {/* Format download panel */}
+                  <div className="border border-gray-200 rounded-xl overflow-hidden">
+                    {/* Header row */}
+                    <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-200">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          id="select-all-formats"
+                          checked={exportSelected.size === EXPORT_FORMATS.length}
+                          onChange={(e) => {
+                            setExportSelected(e.target.checked ? new Set(EXPORT_FORMATS.map(f => f.id)) : new Set());
                           }}
-                          className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 text-white text-base font-semibold hover:bg-emerald-700 disabled:opacity-60 transition-colors"
-                        >
-                          {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                          {exporting ? "Preparing…" : `Download anonymized ${EXPORT_FORMATS.find(f => f.id === exportFormat)?.ext ?? ".csv"}`}
-                        </button>
-                        <button
-                          onClick={() => setExportDropOpen((v) => !v)}
-                          className="px-3 bg-emerald-600 text-white hover:bg-emerald-700 border-l border-emerald-500 transition-colors"
-                          title="Choose format"
-                        >
-                          <ChevronDown className={`w-4 h-4 transition-transform ${exportDropOpen ? "rotate-180" : ""}`} />
-                        </button>
+                          className="w-4 h-4 rounded accent-emerald-600 cursor-pointer"
+                        />
+                        <label htmlFor="select-all-formats" className="text-xs font-semibold text-gray-600 uppercase tracking-wide cursor-pointer select-none">
+                          Select all
+                        </label>
                       </div>
-                      {exportDropOpen && (
-                        <div className="absolute z-20 left-0 right-0 mt-1 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden">
-                          {EXPORT_FORMATS.map((fmt) => (
-                            <button
-                              key={fmt.id}
-                              onClick={() => { setExportFormat(fmt.id); setExportDropOpen(false); }}
-                              className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-0 ${exportFormat === fmt.id ? "bg-emerald-50" : ""}`}
-                            >
-                              <span className={`mt-0.5 text-xs font-bold px-1.5 py-0.5 rounded ${exportFormat === fmt.id ? "bg-emerald-600 text-white" : "bg-gray-100 text-gray-600"}`}>{fmt.ext}</span>
-                              <span>
-                                <span className="text-sm font-semibold text-black block">{fmt.label}</span>
-                                <span className="text-xs text-gray-500">{fmt.description}</span>
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
+                      <button
+                        disabled={exportSelected.size === 0 || bulkExporting}
+                        onClick={async () => {
+                          if (!encResultBlob) return;
+                          setBulkExporting(true);
+                          for (const fmt of EXPORT_FORMATS) {
+                            if (exportSelected.has(fmt.id)) {
+                              setExportingFmt(prev => new Set([...prev, fmt.id]));
+                              await exportAs(fmt.id, encResultBlob, outputBaseName, fields);
+                              await new Promise(r => setTimeout(r, 400));
+                              setExportingFmt(prev => { const s = new Set(prev); s.delete(fmt.id); return s; });
+                            }
+                          }
+                          setBulkExporting(false);
+                        }}
+                        className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {bulkExporting
+                          ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Downloading…</>
+                          : <><Download className="w-3.5 h-3.5" />Download selected ({exportSelected.size})</>
+                        }
+                      </button>
                     </div>
+
+                    {/* Format rows */}
+                    {EXPORT_FORMATS.map((fmt, idx) => {
+                      const isChecked = exportSelected.has(fmt.id);
+                      const isRunning = exportingFmt.has(fmt.id);
+                      return (
+                        <div
+                          key={fmt.id}
+                          className={`flex items-center gap-3 px-4 py-3 ${idx !== EXPORT_FORMATS.length - 1 ? "border-b border-gray-100" : ""} ${isChecked ? "bg-emerald-50/60" : "bg-white"} transition-colors`}
+                        >
+                          <input
+                            type="checkbox"
+                            id={`fmt-${fmt.id}`}
+                            checked={isChecked}
+                            onChange={(e) => {
+                              setExportSelected(prev => {
+                                const s = new Set(prev);
+                                e.target.checked ? s.add(fmt.id) : s.delete(fmt.id);
+                                return s;
+                              });
+                            }}
+                            className="w-4 h-4 rounded accent-emerald-600 cursor-pointer flex-shrink-0"
+                          />
+                          <label htmlFor={`fmt-${fmt.id}`} className="flex-1 flex items-center gap-2.5 cursor-pointer select-none min-w-0">
+                            <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono flex-shrink-0">{fmt.ext}</span>
+                            <span className="min-w-0">
+                              <span className="text-sm font-semibold text-black block">{fmt.label}</span>
+                              <span className="text-xs text-gray-400 truncate block">{fmt.description}</span>
+                            </span>
+                          </label>
+                          <button
+                            disabled={isRunning || bulkExporting}
+                            onClick={async () => {
+                              if (!encResultBlob) return;
+                              setExportingFmt(prev => new Set([...prev, fmt.id]));
+                              await exportAs(fmt.id, encResultBlob, outputBaseName, fields);
+                              setExportingFmt(prev => { const s = new Set(prev); s.delete(fmt.id); return s; });
+                            }}
+                            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0 whitespace-nowrap"
+                          >
+                            {isRunning
+                              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Saving…</>
+                              : <><Download className="w-3.5 h-3.5" />Download</>
+                            }
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Side-by-side + original */}
+                  <div className="flex flex-col sm:flex-row gap-3">
                     <button onClick={handleOpenCompare}
                       className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
                       <Columns2 className="w-4 h-4" />View side by side
