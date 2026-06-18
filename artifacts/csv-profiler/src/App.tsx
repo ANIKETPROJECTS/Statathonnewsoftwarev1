@@ -5,7 +5,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Shield } from "lucide-react";
 import NotFound from "@/pages/not-found";
 import FWFConverter from "@/pages/FWFConverter";
-import RiskAssessmentSingle from "@/pages/RiskAssessmentSingle";
+import RiskAssessmentSingle, { pageCache } from "@/pages/RiskAssessmentSingle";
+import RiskAssessmentComparison from "@/pages/RiskAssessmentComparison";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,7 +21,10 @@ function AppLayout() {
   const [location, navigate] = useLocation();
   const onOriginal   = location.startsWith("/risk-assessment/original");
   const onAnonymized = location.startsWith("/risk-assessment/anonymized");
-  const onRisk       = onOriginal || onAnonymized;
+  const onComparison = location.startsWith("/risk-assessment/comparison");
+  const onRisk       = onOriginal || onAnonymized || onComparison;
+
+  const bothReady = !!pageCache.original.result && !!pageCache.anonymized.result;
 
   return (
     <div className="min-h-screen bg-white">
@@ -36,7 +40,7 @@ function AppLayout() {
 
           <div className="flex-1" />
 
-          {/* Risk Assessment nav — two split buttons */}
+          {/* Risk Assessment nav — split buttons */}
           <div className="flex items-center gap-1">
             <div className="flex items-center gap-0.5 border border-indigo-200 rounded-xl overflow-hidden bg-indigo-50">
               <span className="flex items-center gap-1.5 pl-3 pr-2 py-2 text-xs font-bold text-indigo-500 select-none">
@@ -62,6 +66,22 @@ function AppLayout() {
                 }`}>
                 🔒 Anonymized File
               </button>
+              <div className="w-px h-5 bg-indigo-200" />
+              <button
+                onClick={() => navigate("/risk-assessment/comparison")}
+                title={bothReady ? "Compare both datasets" : "Run both analyses first to unlock comparison"}
+                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-semibold transition-colors ${
+                  onComparison
+                    ? "bg-teal-600 text-white"
+                    : bothReady
+                      ? "text-teal-700 hover:bg-teal-100"
+                      : "text-teal-400 hover:bg-teal-50"
+                }`}>
+                ⚖️ Comparison
+                {bothReady && !onComparison && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-teal-500 ml-0.5" />
+                )}
+              </button>
             </div>
           </div>
         </div>
@@ -76,6 +96,9 @@ function AppLayout() {
           </Route>
           <Route path="/risk-assessment/anonymized">
             {() => <RiskAssessmentSingle key="anonymized" mode="anonymized" />}
+          </Route>
+          <Route path="/risk-assessment/comparison">
+            {() => <RiskAssessmentComparison />}
           </Route>
           <Route path="/risk-assessment">
             {() => <RiskAssessmentLanding navigate={navigate} />}
@@ -114,6 +137,15 @@ function RiskAssessmentLanding({ navigate }: { navigate: (to: string) => void })
           <div>
             <p className="font-bold text-purple-800 text-base">Anonymized File</p>
             <p className="text-xs text-purple-600 mt-1">Validate that the privacy-protected dataset meets your risk threshold</p>
+          </div>
+        </button>
+        <button
+          onClick={() => navigate("/risk-assessment/comparison")}
+          className="flex flex-col items-center gap-3 w-56 p-8 border-2 border-teal-200 rounded-2xl bg-teal-50 hover:bg-teal-100 hover:border-teal-400 transition-all text-left group">
+          <span className="text-4xl">⚖️</span>
+          <div>
+            <p className="font-bold text-teal-800 text-base">Comparison</p>
+            <p className="text-xs text-teal-600 mt-1">Compare original vs anonymized datasets and measure privacy improvement</p>
           </div>
         </button>
       </div>

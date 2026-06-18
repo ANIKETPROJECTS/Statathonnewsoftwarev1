@@ -78,7 +78,7 @@ const DEFAULT_PAGE_STATE: PageState = {
   result: null,
 };
 
-const pageCache: Record<FileMode, PageState> = {
+export const pageCache: Record<FileMode, PageState> = {
   original:   { ...DEFAULT_PAGE_STATE },
   anonymized: { ...DEFAULT_PAGE_STATE },
 };
