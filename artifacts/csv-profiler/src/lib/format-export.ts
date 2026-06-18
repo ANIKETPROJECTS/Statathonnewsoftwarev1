@@ -1,9 +1,10 @@
 import Papa from "papaparse";
+import * as XLSX from "xlsx";
 import type { FieldDef } from "./fwf-parser";
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-export type ExportFormat = "csv" | "txt" | "dta" | "sav" | "xpt";
+export type ExportFormat = "csv" | "txt" | "dta" | "sav" | "xpt" | "json" | "xlsx";
 
 export interface FormatMeta {
   id: ExportFormat;
@@ -13,11 +14,13 @@ export interface FormatMeta {
 }
 
 export const EXPORT_FORMATS: FormatMeta[] = [
-  { id: "csv",  label: "CSV",         ext: ".csv", description: "Comma-separated values" },
-  { id: "txt",  label: "TXT",         ext: ".txt", description: "Original fixed-width format with anonymized data" },
-  { id: "dta",  label: "Stata",       ext: ".dta", description: "Stata dataset (v115)" },
-  { id: "sav",  label: "SPSS",        ext: ".sav", description: "SPSS Statistics data file" },
-  { id: "xpt",  label: "SAS XPORT",   ext: ".xpt", description: "SAS transport format (v5)" },
+  { id: "csv",  label: "CSV",         ext: ".csv",  description: "Comma-separated values" },
+  { id: "txt",  label: "TXT",         ext: ".txt",  description: "Original fixed-width format with anonymized data" },
+  { id: "json", label: "JSON",        ext: ".json", description: "Array of objects keyed by column name" },
+  { id: "xlsx", label: "Excel",       ext: ".xlsx", description: "Microsoft Excel workbook" },
+  { id: "dta",  label: "Stata",       ext: ".dta",  description: "Stata dataset (v115)" },
+  { id: "sav",  label: "SPSS",        ext: ".sav",  description: "SPSS Statistics data file" },
+  { id: "xpt",  label: "SAS XPORT",   ext: ".xpt",  description: "SAS transport format (v5)" },
 ];
 
 function triggerDownload(blob: Blob, fileName: string): void {
@@ -461,6 +464,44 @@ export async function exportAsSAS(
   );
 }
 
+// ── JSON ──────────────────────────────────────────────────────────────────────
+
+export async function exportAsJSON(csvBlob: Blob, baseName: string): Promise<void> {
+  const { headers, rows } = await parseCsvBlob(csvBlob);
+  const data = rows.map((row) => {
+    const obj: Record<string, string> = {};
+    headers.forEach((h, i) => { obj[h] = row[i] ?? ""; });
+    return obj;
+  });
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  triggerDownload(blob, `${baseName}_anonymized.json`);
+}
+
+// ── Excel (.xlsx) ─────────────────────────────────────────────────────────────
+
+export async function exportAsExcel(csvBlob: Blob, baseName: string): Promise<void> {
+  const { headers, rows } = await parseCsvBlob(csvBlob);
+  const aoa = [headers, ...rows];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+  // Auto-width columns (cap at 40)
+  ws["!cols"] = headers.map((h, i) => {
+    const maxLen = Math.max(
+      h.length,
+      ...rows.slice(0, 500).map((r) => (r[i] ?? "").length)
+    );
+    return { wch: Math.min(maxLen + 2, 40) };
+  });
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Anonymized");
+  const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  const blob = new Blob([buf], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  triggerDownload(blob, `${baseName}_anonymized.xlsx`);
+}
+
 // ── Main dispatcher ───────────────────────────────────────────────────────────
 
 export async function exportAs(
@@ -470,10 +511,12 @@ export async function exportAs(
   baseName: string
 ): Promise<void> {
   switch (format) {
-    case "csv": exportAsCSV(csvBlob, baseName); break;
-    case "txt": await exportAsTXT(csvBlob, fields, baseName); break;
-    case "dta": await exportAsStata(csvBlob, fields, baseName); break;
-    case "sav": await exportAsSPSS(csvBlob, fields, baseName); break;
-    case "xpt": await exportAsSAS(csvBlob, fields, baseName); break;
+    case "csv":  exportAsCSV(csvBlob, baseName); break;
+    case "txt":  await exportAsTXT(csvBlob, fields, baseName); break;
+    case "json": await exportAsJSON(csvBlob, baseName); break;
+    case "xlsx": await exportAsExcel(csvBlob, baseName); break;
+    case "dta":  await exportAsStata(csvBlob, fields, baseName); break;
+    case "sav":  await exportAsSPSS(csvBlob, fields, baseName); break;
+    case "xpt":  await exportAsSAS(csvBlob, fields, baseName); break;
   }
 }
