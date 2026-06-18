@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Upload, CheckCircle2, AlertTriangle,
   X, ArrowRight, Download, Eye, Layers, RotateCcw,
-  Key, Lock, Shuffle, LockOpen, Search, Columns2, Loader2,
+  Key, Lock, Shuffle, LockOpen, Search, Columns2, Loader2, FileSpreadsheet,
 } from "lucide-react";
 import folderIcon from "@assets/open-folder_1781738999125.png";
 import {
