@@ -183,9 +183,13 @@ export async function encryptFWFToBlob(
   }
 
   const lines = rawText.split(/\r?\n/);
-  const dataLines: string[] = [];
+  let dataLines: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].length > 0) dataLines.push(lines[i]);
+  }
+  // If the first line contains commas it is a CSV header row (FWF lines are never comma-delimited) — skip it
+  if (dataLines.length > 0 && dataLines[0].includes(",")) {
+    dataLines = dataLines.slice(1);
   }
   const total = dataLines.length;
 

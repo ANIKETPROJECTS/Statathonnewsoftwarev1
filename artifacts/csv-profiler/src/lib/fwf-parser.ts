@@ -348,7 +348,11 @@ export async function convertFWFToCSV(
   const header = fields.map((f) => csvCell(f.varName)).join(",");
   const chunks: string[] = [header + "\n"];
 
-  const dataLines = lines.filter((l) => l.length > 0);
+  let dataLines = lines.filter((l) => l.length > 0);
+  // If the first line contains commas it is a CSV header (FWF lines are never comma-delimited) — skip it
+  if (dataLines.length > 0 && dataLines[0].includes(",")) {
+    dataLines = dataLines.slice(1);
+  }
   const total = dataLines.length;
 
   for (let i = 0; i < total; i += CHUNK) {

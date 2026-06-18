@@ -230,7 +230,9 @@ export default function FWFConverter() {
       try {
         const text = await file.text();
         const lines = text.split(/\r?\n/).filter(l => l.length > 0);
-        patchFile(setDataFiles, df.id, { text, lineCount: lines.length });
+        // If the first line has commas it is a CSV header row — don't count it as a data record
+        const hasCsvHeader = lines.length > 0 && lines[0].includes(",");
+        patchFile(setDataFiles, df.id, { text, lineCount: hasCsvHeader ? lines.length - 1 : lines.length });
       } catch (e) { patchFile(setDataFiles, df.id, { error: `Read error: ${(e as Error).message}` }); }
     }
   }, []);
@@ -241,7 +243,9 @@ export default function FWFConverter() {
       const lo = layouts.find(l => l.id === layoutId);
       let preview: string[][] = [];
       if (lo?.result && df.text) {
-        const lines = df.text.split(/\r?\n/).filter(l => l.length > 0);
+        let lines = df.text.split(/\r?\n/).filter(l => l.length > 0);
+        // Skip CSV header row if present (FWF lines are never comma-delimited)
+        if (lines.length > 0 && lines[0].includes(",")) lines = lines.slice(1);
         preview = lines.slice(0, 10).map(line =>
           lo.result!.fields.map(f => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
         );
@@ -324,7 +328,9 @@ export default function FWFConverter() {
     try {
       const MAX = 500;
       const headers = lo.result.fields.map(f => f.varName);
-      const fwfLines = df.text.split(/\r?\n/).filter(l => l.length > 0);
+      let fwfLines = df.text.split(/\r?\n/).filter(l => l.length > 0);
+      // Skip CSV header row if present (FWF lines are never comma-delimited)
+      if (fwfLines.length > 0 && fwfLines[0].includes(",")) fwfLines = fwfLines.slice(1);
       const original = fwfLines.slice(0, MAX).map(line =>
         lo.result!.fields.map(f => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
       );
