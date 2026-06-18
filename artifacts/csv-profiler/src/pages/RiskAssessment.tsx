@@ -36,15 +36,13 @@ function statusLabel(atRisk: boolean, linkScore: number, k: number, ecSize: numb
   return { label: "🟢 PROTECTED", cls: "text-green-700 text-xs" };
 }
 
-// ── CSV parser helper ─────────────────────────────────────────────────────────
-
 function triggerBlobDownload(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a"); a.href = url; a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type FileLabel = "original" | "anonymized";
 
@@ -55,97 +53,214 @@ interface LoadedFile {
   rows: DataRow[];
 }
 
-export default function RiskAssessment() {
+// ── File upload card ──────────────────────────────────────────────────────────
+
+function FileUploadCard({
+  label,
+  icon,
+  accentClass,
+  loadedFile,
+  onFile,
+  onClear,
+  fileError,
+}: {
+  label: FileLabel;
+  icon: string;
+  accentClass: { border: string; bg: string; text: string; badgeBg: string; badgeText: string; accent: string; radio: string };
+  loadedFile: LoadedFile | null;
+  onFile: (file: File) => void;
+  onClear: () => void;
+  fileError: string;
+}) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const title = label === "original" ? "Original CSV" : "Anonymized CSV";
+  const desc  = label === "original"
+    ? "Upload the unmodified source dataset"
+    : "Upload the privacy-protected version";
 
-  // File state
-  const [loadedFile, setLoadedFile] = useState<LoadedFile | null>(null);
-  const [fileLabel, setFileLabel] = useState<FileLabel>("original");
-  const [fileError, setFileError] = useState("");
+  return (
+    <div className={`flex-1 border-2 rounded-xl overflow-hidden ${loadedFile ? accentClass.border : "border-dashed border-gray-200"} transition-colors`}>
+      {/* Card header */}
+      <div className={`px-4 py-3 flex items-center gap-2 border-b ${loadedFile ? accentClass.border : "border-gray-200"} ${loadedFile ? accentClass.bg : "bg-gray-50"}`}>
+        <span className="text-base">{icon}</span>
+        <div className="flex-1">
+          <p className={`text-sm font-semibold ${loadedFile ? accentClass.text : "text-gray-700"}`}>{title}</p>
+          <p className="text-xs text-gray-400">{desc}</p>
+        </div>
+        {loadedFile && (
+          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${accentClass.badgeBg} ${accentClass.badgeText}`}>Loaded</span>
+        )}
+      </div>
 
-  // Config state
+      {/* Drop zone / file info */}
+      <div className="p-3 bg-white">
+        <input ref={inputRef} type="file" accept=".csv" className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ""; }} />
+
+        {!loadedFile ? (
+          <div
+            className="rounded-lg p-6 text-center cursor-pointer hover:bg-gray-50 transition-all"
+            onClick={() => inputRef.current?.click()}
+            onDragOver={e => e.preventDefault()}
+            onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) onFile(f); }}>
+            <Upload className="w-7 h-7 text-gray-300 mx-auto mb-2" />
+            <p className="text-xs font-semibold text-gray-600">Drop CSV or click to browse</p>
+            <span className="mt-2 inline-block text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-500 font-medium">Browse</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-gray-50 border border-gray-200">
+            <FileText className={`w-4 h-4 flex-shrink-0 ${accentClass.text}`} />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-black truncate">{loadedFile.name}</p>
+              <p className="text-xs text-gray-400">{loadedFile.rows.length.toLocaleString()} records · {loadedFile.headers.length} cols</p>
+            </div>
+            <button onClick={() => inputRef.current?.click()}
+              className="text-xs px-2 py-1 rounded border border-gray-200 text-gray-500 hover:text-black hover:border-gray-400 transition-colors whitespace-nowrap flex-shrink-0">
+              Change
+            </button>
+            <button onClick={onClear} className="text-gray-400 hover:text-red-500 flex-shrink-0 ml-0.5">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {fileError && (
+          <div className="flex items-center gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-2">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />{fileError}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Accent styles ──────────────────────────────────────────────────────────────
+
+const ACCENT = {
+  original: {
+    border: "border-blue-200",
+    bg: "bg-blue-50",
+    text: "text-blue-700",
+    badgeBg: "bg-blue-100",
+    badgeText: "text-blue-800",
+    accent: "indigo",
+    radio: "accent-blue-600",
+    tab: "bg-blue-600 text-white",
+    tabInactive: "text-blue-700 hover:bg-blue-50",
+    ring: "ring-blue-400",
+  },
+  anonymized: {
+    border: "border-purple-200",
+    bg: "bg-purple-50",
+    text: "text-purple-700",
+    badgeBg: "bg-purple-100",
+    badgeText: "text-purple-800",
+    accent: "purple",
+    radio: "accent-purple-600",
+    tab: "bg-purple-600 text-white",
+    tabInactive: "text-purple-700 hover:bg-purple-50",
+    ring: "ring-purple-400",
+  },
+};
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+
+export default function RiskAssessment() {
+  // Two separate file states
+  const [originalFile, setOriginalFile]       = useState<LoadedFile | null>(null);
+  const [anonymizedFile, setAnonymizedFile]   = useState<LoadedFile | null>(null);
+  const [originalError, setOriginalError]     = useState("");
+  const [anonymizedError, setAnonymizedError] = useState("");
+
+  // Shared config state (columns come from whichever file is available)
+  const activeHeaders = (originalFile ?? anonymizedFile)?.headers ?? [];
   const [selectedQIs, setSelectedQIs] = useState<string[]>([]);
   const [selectedSAs, setSelectedSAs] = useState<string[]>([]);
-  const [kThreshold, setKThreshold] = useState(5);
-  const [lThreshold, setLThreshold] = useState(3);
-  const [tThreshold, setTThreshold] = useState(0.2);
-  const [samplePct, setSamplePct] = useState(100);
+  const [kThreshold, setKThreshold]   = useState(5);
+  const [lThreshold, setLThreshold]   = useState(3);
+  const [tThreshold, setTThreshold]   = useState(0.2);
+  const [samplePct, setSamplePct]     = useState(100);
 
-  // Run state
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<ProsecutorResult | null>(null);
+  // Two separate results
+  const [originalResult,   setOriginalResult]   = useState<ProsecutorResult | null>(null);
+  const [anonymizedResult, setAnonymizedResult] = useState<ProsecutorResult | null>(null);
+  const [running, setRunning]                   = useState(false);
 
-  // Result view state
-  const [filterMode, setFilterMode] = useState<"all" | "risk" | "protected">("all");
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(0);
-  const PAGE_SIZE = 50;
+  // Active result tab
+  const [activeView, setActiveView] = useState<FileLabel>("original");
 
-  // ── File handling ──────────────────────────────────────────────────────────
+  // ── File handlers ──────────────────────────────────────────────────────────
 
-  const handleFile = useCallback(async (file: File) => {
-    setFileError("");
-    setResult(null);
+  const makeFileHandler = useCallback((
+    label: FileLabel,
+    setFile: (f: LoadedFile | null) => void,
+    setError: (e: string) => void,
+  ) => async (file: File) => {
+    setError("");
+    if (label === "original") setOriginalResult(null);
+    else setAnonymizedResult(null);
+    // Reset shared QI/SA if headers change
     setSelectedQIs([]);
     setSelectedSAs([]);
     try {
       const text = await file.text();
       const { headers, rows } = parseCSVToRows(text);
-      if (headers.length === 0) { setFileError("Could not read CSV headers."); return; }
-      setLoadedFile({ name: file.name, label: fileLabel, headers, rows });
+      if (headers.length === 0) { setError("Could not read CSV headers."); return; }
+      setFile({ name: file.name, label, headers, rows });
     } catch (e) {
-      setFileError(`Read error: ${(e as Error).message}`);
+      setError(`Read error: ${(e as Error).message}`);
     }
-  }, [fileLabel]);
+  }, []);
 
-  const onInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) handleFile(f);
-    e.target.value = "";
-  };
+  const handleOriginalFile   = makeFileHandler("original",   setOriginalFile,   setOriginalError);
+  const handleAnonymizedFile = makeFileHandler("anonymized", setAnonymizedFile, setAnonymizedError);
+
+  const clearOriginal = () => { setOriginalFile(null); setOriginalResult(null); setOriginalError(""); };
+  const clearAnonymized = () => { setAnonymizedFile(null); setAnonymizedResult(null); setAnonymizedError(""); };
 
   // ── Run analysis ───────────────────────────────────────────────────────────
 
   const runAnalysis = async () => {
-    if (!loadedFile || selectedQIs.length === 0) return;
+    if (selectedQIs.length === 0) return;
     setRunning(true);
-    setResult(null);
+
     await new Promise(r => setTimeout(r, 20));
-    const data = sampleData(loadedFile.rows, samplePct);
-    const res = runProsecutorAttack(data, selectedQIs, kThreshold, selectedSAs, lThreshold, tThreshold);
-    setResult(res);
-    setPage(0);
-    setFilterMode("all");
-    setSearch("");
+
+    if (originalFile) {
+      const data = sampleData(originalFile.rows, samplePct);
+      const res = runProsecutorAttack(data, selectedQIs, kThreshold, selectedSAs, lThreshold, tThreshold);
+      setOriginalResult(res);
+    }
+    if (anonymizedFile) {
+      const data = sampleData(anonymizedFile.rows, samplePct);
+      const res = runProsecutorAttack(data, selectedQIs, kThreshold, selectedSAs, lThreshold, tThreshold);
+      setAnonymizedResult(res);
+    }
+
+    // Auto-switch to the most recently meaningful view
+    if (originalFile && !anonymizedFile) setActiveView("original");
+    else if (!originalFile && anonymizedFile) setActiveView("anonymized");
+
     setRunning(false);
   };
 
-  // ── Filtered record table ──────────────────────────────────────────────────
+  const anyFileLoaded    = !!(originalFile || anonymizedFile);
+  const hasResults       = !!(originalResult || anonymizedResult);
+  const visibleResult    = activeView === "original" ? originalResult : anonymizedResult;
+  const visibleFile      = activeView === "original" ? originalFile  : anonymizedFile;
 
-  const filteredRows = result ? result.recordTable.filter(r => {
-    if (filterMode === "risk" && !r.atRisk) return false;
-    if (filterMode === "protected" && r.atRisk) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      return Object.values(r.qiValues).some(v => v.toLowerCase().includes(q));
-    }
-    return true;
-  }) : [];
-  const pageCount = Math.ceil(filteredRows.length / PAGE_SIZE);
-  const pageRows = filteredRows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-
-  // ── Download Word report ───────────────────────────────────────────────────
+  // ── Docx download ──────────────────────────────────────────────────────────
 
   const [docxGenerating, setDocxGenerating] = useState(false);
 
   const downloadWordReport = async () => {
-    if (!result || !loadedFile) return;
+    if (!visibleResult || !visibleFile) return;
     setDocxGenerating(true);
     try {
       const blob = await generateProsecutorReportDocx(
-        result,
-        loadedFile.label,
-        loadedFile.name,
+        visibleResult,
+        visibleFile.label,
+        visibleFile.name,
         kThreshold,
         lThreshold,
         tThreshold,
@@ -153,7 +268,7 @@ export default function RiskAssessment() {
         selectedSAs,
       );
       const date = new Date().toISOString().slice(0, 10);
-      triggerBlobDownload(blob, `prosecutor_attack_report_${date}.docx`);
+      triggerBlobDownload(blob, `prosecutor_attack_report_${visibleFile.label}_${date}.docx`);
     } finally {
       setDocxGenerating(false);
     }
@@ -163,9 +278,6 @@ export default function RiskAssessment() {
 
   return (
     <div className="space-y-8">
-      {/* Always-mounted hidden file input */}
-      <input ref={inputRef} type="file" accept=".csv" className="hidden" onChange={onInputChange} />
-
       {/* Header */}
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center flex-shrink-0">
@@ -184,9 +296,9 @@ export default function RiskAssessment() {
           <p className="text-sm text-gray-500 mt-0.5">Select an attack model to evaluate</p>
         </div>
 
-        {/* Prosecutor Attack card */}
         <div className="p-6 space-y-6">
           <div className="border border-indigo-200 rounded-xl overflow-hidden bg-indigo-50/30">
+            {/* Card header */}
             <div className="px-5 py-4 bg-white border-b border-indigo-100 flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center flex-shrink-0">
                 <Shield className="w-4 h-4 text-white" />
@@ -200,55 +312,41 @@ export default function RiskAssessment() {
 
             <div className="p-5 space-y-6">
 
-              {/* ── Step A: Upload file ─────────────────────────────────────── */}
+              {/* ── Step 1: Two upload cards ─────────────────────────────────── */}
               <div className="space-y-3">
-                <p className="text-sm font-semibold text-black">1 — Upload dataset for analysis</p>
-                <div className="flex gap-3 flex-wrap">
-                  {(["original", "anonymized"] as FileLabel[]).map(lbl => (
-                    <label key={lbl} className={`flex items-center gap-2 px-4 py-2 rounded-xl border cursor-pointer text-sm font-medium transition-colors ${fileLabel === lbl ? "border-indigo-500 bg-indigo-50 text-indigo-800" : "border-gray-200 text-gray-500 hover:border-gray-300"}`}>
-                      <input type="radio" className="accent-indigo-600" checked={fileLabel === lbl} onChange={() => setFileLabel(lbl)} />
-                      {lbl === "original" ? "📄 Original CSV" : "🔒 Anonymized CSV"}
-                    </label>
-                  ))}
+                <p className="text-sm font-semibold text-black">1 — Upload datasets for analysis</p>
+                <p className="text-xs text-gray-400">Upload one or both files. Analysis runs on each separately — switch between results below.</p>
+                <div className="flex gap-3 flex-wrap sm:flex-nowrap">
+                  <FileUploadCard
+                    label="original"
+                    icon="📄"
+                    accentClass={ACCENT.original}
+                    loadedFile={originalFile}
+                    onFile={handleOriginalFile}
+                    onClear={clearOriginal}
+                    fileError={originalError}
+                  />
+                  <FileUploadCard
+                    label="anonymized"
+                    icon="🔒"
+                    accentClass={ACCENT.anonymized}
+                    loadedFile={anonymizedFile}
+                    onFile={handleAnonymizedFile}
+                    onClear={clearAnonymized}
+                    fileError={anonymizedError}
+                  />
                 </div>
-
-                {!loadedFile ? (
-                  <div
-                    className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-all"
-                    onClick={() => inputRef.current?.click()}
-                    onDragOver={e => e.preventDefault()}
-                    onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}>
-                    <Upload className="w-8 h-8 text-gray-300 mx-auto mb-3" />
-                    <p className="text-sm font-semibold text-black">Drop CSV here or click to browse</p>
-                    <p className="text-xs text-gray-400 mt-1">Upload your original or anonymized CSV file</p>
-                    <span className="mt-3 inline-block text-sm px-4 py-2 rounded-xl border border-gray-200 bg-white text-gray-500 font-medium">Browse</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white border border-gray-200">
-                    <FileText className="w-4 h-4 text-indigo-500 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-black truncate">{loadedFile.name}</p>
-                      <p className="text-xs text-gray-500">{loadedFile.rows.length.toLocaleString()} records · {loadedFile.headers.length} columns · {loadedFile.label}</p>
-                    </div>
-                    <button onClick={() => { setLoadedFile(null); setResult(null); setSelectedQIs([]); setSelectedSAs([]); }}
-                      className="text-gray-400 hover:text-black flex-shrink-0"><X className="w-4 h-4" /></button>
-                    <button onClick={() => inputRef.current?.click()}
-                      className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-500 hover:text-black hover:border-gray-400 transition-colors whitespace-nowrap flex-shrink-0">
-                      Change file
-                    </button>
-                  </div>
-                )}
-                {fileError && (
-                  <div className="flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5">
-                    <AlertTriangle className="w-4 h-4 flex-shrink-0" />{fileError}
-                  </div>
-                )}
               </div>
 
-              {/* ── Step B: Configure columns ───────────────────────────────── */}
-              {loadedFile && (
+              {/* ── Step 2: Column config ────────────────────────────────────── */}
+              {anyFileLoaded && (
                 <div className="space-y-4">
-                  <p className="text-sm font-semibold text-black">2 — Select columns</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold text-black">2 — Select columns</p>
+                    <span className="text-xs text-gray-400">
+                      (from {originalFile ? "original" : "anonymized"} file{originalFile && anonymizedFile ? " — applies to both" : ""})
+                    </span>
+                  </div>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     {/* QI selector */}
                     <div className="space-y-2">
@@ -257,7 +355,7 @@ export default function RiskAssessment() {
                         <span className="text-xs text-gray-400">(columns that can identify a person)</span>
                       </div>
                       <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
-                        {loadedFile.headers.map(h => (
+                        {activeHeaders.map(h => (
                           <label key={h} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer text-sm transition-colors ${selectedQIs.includes(h) ? "border-indigo-400 bg-indigo-50 text-black" : "border-gray-200 text-gray-600 hover:border-gray-300"}`}>
                             <input type="checkbox" className="accent-indigo-600"
                               checked={selectedQIs.includes(h)}
@@ -279,7 +377,7 @@ export default function RiskAssessment() {
                         <span className="text-xs text-gray-400">(optional — for L/T checks)</span>
                       </div>
                       <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
-                        {loadedFile.headers.filter(h => !selectedQIs.includes(h)).map(h => (
+                        {activeHeaders.filter(h => !selectedQIs.includes(h)).map(h => (
                           <label key={h} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer text-sm transition-colors ${selectedSAs.includes(h) ? "border-purple-400 bg-purple-50 text-black" : "border-gray-200 text-gray-600 hover:border-gray-300"}`}>
                             <input type="checkbox" className="accent-purple-600"
                               checked={selectedSAs.includes(h)}
@@ -287,7 +385,7 @@ export default function RiskAssessment() {
                             <span className="font-mono text-xs font-medium truncate">{h}</span>
                           </label>
                         ))}
-                        {loadedFile.headers.filter(h => !selectedQIs.includes(h)).length === 0 && (
+                        {activeHeaders.filter(h => !selectedQIs.includes(h)).length === 0 && (
                           <p className="text-xs text-gray-400 px-3 py-2">Select QIs first to see remaining columns</p>
                         )}
                       </div>
@@ -297,16 +395,16 @@ export default function RiskAssessment() {
                 </div>
               )}
 
-              {/* ── Step C: Parameters ─────────────────────────────────────── */}
-              {loadedFile && (
+              {/* ── Step 3: Parameters ───────────────────────────────────────── */}
+              {anyFileLoaded && (
                 <div className="space-y-4">
                   <p className="text-sm font-semibold text-black">3 — Parameters</p>
                   <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
                     {[
-                      { label: "k-Threshold", desc: "Min EC size", val: kThreshold, set: setKThreshold, min: 2, max: 50, step: 1, fmt: (v: number) => v.toString() },
-                      { label: "l-Threshold", desc: "Min distinct SA", val: lThreshold, set: setLThreshold, min: 2, max: 20, step: 1, fmt: (v: number) => v.toString() },
-                      { label: "t-Threshold", desc: "Max TVD", val: tThreshold, set: setTThreshold, min: 0.05, max: 1, step: 0.05, fmt: (v: number) => v.toFixed(2) },
-                      { label: "Sample %", desc: "Rows to analyse", val: samplePct, set: setSamplePct, min: 1, max: 100, step: 1, fmt: (v: number) => v + "%" },
+                      { label: "k-Threshold", desc: "Min EC size",      val: kThreshold, set: setKThreshold, min: 2,    max: 50,  step: 1,    fmt: (v: number) => v.toString() },
+                      { label: "l-Threshold", desc: "Min distinct SA",  val: lThreshold, set: setLThreshold, min: 2,    max: 20,  step: 1,    fmt: (v: number) => v.toString() },
+                      { label: "t-Threshold", desc: "Max TVD",          val: tThreshold, set: setTThreshold, min: 0.05, max: 1,   step: 0.05, fmt: (v: number) => v.toFixed(2) },
+                      { label: "Sample %",    desc: "Rows to analyse",  val: samplePct,  set: setSamplePct,  min: 1,    max: 100, step: 1,    fmt: (v: number) => v + "%" },
                     ].map(({ label, desc, val, set, min, max, step, fmt }) => (
                       <div key={label} className="space-y-1">
                         <div className="flex items-center justify-between">
@@ -324,64 +422,110 @@ export default function RiskAssessment() {
               )}
 
               {/* ── Run button ──────────────────────────────────────────────── */}
-              {loadedFile && (
+              {anyFileLoaded && (
                 <button
                   onClick={runAnalysis}
                   disabled={running || selectedQIs.length === 0}
                   className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 disabled:opacity-50 transition-colors">
                   {running
                     ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Running analysis…</>
-                    : <><Play className="w-4 h-4" />Run Prosecutor Attack</>}
+                    : <><Play className="w-4 h-4" />Run Prosecutor Attack{originalFile && anonymizedFile ? " on Both Files" : ""}</>}
                 </button>
               )}
             </div>
           </div>
 
-          {/* ── Results ─────────────────────────────────────────────────────── */}
-          {result && <ProsecutorReport
-            result={result}
-            fileLabel={loadedFile?.label ?? "original"}
-            kThreshold={kThreshold}
-            filterMode={filterMode} setFilterMode={setFilterMode}
-            search={search} setSearch={setSearch}
-            page={page} setPage={setPage}
-            pageRows={pageRows} pageCount={pageCount} filteredRows={filteredRows}
-            downloadWordReport={downloadWordReport}
-            docxGenerating={docxGenerating}
-          />}
+          {/* ── Results section ──────────────────────────────────────────────── */}
+          {hasResults && (
+            <div className="space-y-4">
+              {/* Tab switcher */}
+              <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-xl w-fit">
+                {(["original", "anonymized"] as FileLabel[]).map(view => {
+                  const result = view === "original" ? originalResult : anonymizedResult;
+                  const file   = view === "original" ? originalFile   : anonymizedFile;
+                  if (!result) return null;
+                  const icon  = view === "original" ? "📄" : "🔒";
+                  const label = view === "original" ? "Original" : "Anonymized";
+                  const rc    = riskColor(result.reIdRisk);
+                  const isActive = activeView === view;
+                  return (
+                    <button
+                      key={view}
+                      onClick={() => setActiveView(view)}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                        isActive
+                          ? view === "original"
+                            ? "bg-blue-600 text-white shadow-sm"
+                            : "bg-purple-600 text-white shadow-sm"
+                          : "text-gray-500 hover:text-gray-800 hover:bg-gray-200"
+                      }`}>
+                      <span>{icon}</span>
+                      <span>{label}</span>
+                      {file && (
+                        <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${
+                          isActive
+                            ? "bg-white/20 text-white"
+                            : `${rc.badge}`
+                        }`}>
+                          {(result.reIdRisk * 100).toFixed(1)}%
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Active result */}
+              {visibleResult && visibleFile && (
+                <ProsecutorReport
+                  key={activeView}
+                  result={visibleResult}
+                  fileLabel={visibleFile.label}
+                  kThreshold={kThreshold}
+                  downloadWordReport={downloadWordReport}
+                  docxGenerating={docxGenerating}
+                />
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-// ── ProsecutorReport component ────────────────────────────────────────────────
+// ── ProsecutorReport component (manages its own view state) ───────────────────
 
 function ProsecutorReport({
   result, fileLabel, kThreshold,
-  filterMode, setFilterMode, search, setSearch,
-  page, setPage, pageRows, pageCount, filteredRows,
   downloadWordReport, docxGenerating,
 }: {
   result: ProsecutorResult;
   fileLabel: FileLabel;
   kThreshold: number;
-  filterMode: "all" | "risk" | "protected";
-  setFilterMode: (v: "all" | "risk" | "protected") => void;
-  search: string;
-  setSearch: (v: string) => void;
-  page: number;
-  setPage: (v: number) => void;
-  pageRows: ReturnType<typeof result.recordTable.slice>;
-  pageCount: number;
-  filteredRows: typeof result.recordTable;
   downloadWordReport: () => void;
   docxGenerating: boolean;
 }) {
-  const rc = riskColor(result.reIdRisk);
+  const [filterMode, setFilterMode] = useState<"all" | "risk" | "protected">("all");
+  const [search, setSearch]         = useState("");
+  const [page, setPage]             = useState(0);
+  const PAGE_SIZE = 50;
+
+  const filteredRows = result.recordTable.filter(r => {
+    if (filterMode === "risk" && !r.atRisk) return false;
+    if (filterMode === "protected" && r.atRisk) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return Object.values(r.qiValues).some(v => v.toLowerCase().includes(q));
+    }
+    return true;
+  });
+  const pageCount = Math.ceil(filteredRows.length / PAGE_SIZE);
+  const pageRows  = filteredRows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  const rc          = riskColor(result.reIdRisk);
   const isSingleton = result.totalRecords > 0 && result.equivalenceClasses.length >= 0.9 * result.totalRecords;
 
-  // §4.1 — Attack Summary Banner
   return (
     <div className="space-y-6 mt-2">
 
@@ -399,7 +543,7 @@ function ProsecutorReport({
         </button>
       </div>
 
-      {/* §4.1 Banner */}
+      {/* Banner */}
       <div className={`border rounded-xl p-5 ${rc.border} ${rc.bg}`}>
         <div className="flex items-center gap-3 flex-wrap">
           <Shield className={`w-6 h-6 ${rc.text} flex-shrink-0`} />
@@ -427,29 +571,13 @@ function ProsecutorReport({
         </p>
       </div>
 
-      {/* §4.2 — 4 KPI Cards */}
+      {/* 4 KPI Cards */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         {[
-          {
-            title: "Re-ID Risk", value: `${(result.reIdRisk * 100).toFixed(1)}%`,
-            sub: "Avg chance attacker correctly IDs a person",
-            danger: result.reIdRisk > 0.2,
-          },
-          {
-            title: "Unique Records", value: result.uniqueRecordsCount.toLocaleString(),
-            sub: "Singletons — 100% identifiable (k=1)",
-            danger: result.uniqueRecordsCount > 0,
-          },
-          {
-            title: "Avg EC Size", value: result.avgEcSize.toFixed(1),
-            sub: "Mean group size sharing same QI values",
-            danger: result.avgEcSize < kThreshold,
-          },
-          {
-            title: "Min-K", value: result.minK.toString(),
-            sub: "Smallest group — worst-case exposure",
-            danger: result.minK < kThreshold,
-          },
+          { title: "Re-ID Risk",       value: `${(result.reIdRisk * 100).toFixed(1)}%`,      sub: "Avg chance attacker correctly IDs a person",  danger: result.reIdRisk > 0.2 },
+          { title: "Unique Records",   value: result.uniqueRecordsCount.toLocaleString(),     sub: "Singletons — 100% identifiable (k=1)",         danger: result.uniqueRecordsCount > 0 },
+          { title: "Avg EC Size",      value: result.avgEcSize.toFixed(1),                    sub: "Mean group size sharing same QI values",       danger: result.avgEcSize < kThreshold },
+          { title: "Min-K",            value: result.minK.toString(),                         sub: "Smallest group — worst-case exposure",         danger: result.minK < kThreshold },
         ].map(({ title, value, sub, danger }) => (
           <div key={title} className="border border-gray-200 rounded-xl p-4 bg-white">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{title}</p>
@@ -459,7 +587,7 @@ function ProsecutorReport({
         ))}
       </div>
 
-      {/* §4.3 — Record-level attack trace table */}
+      {/* Record-level attack trace table */}
       <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
         <div className="px-5 py-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-3">
           <p className="font-semibold text-black text-sm flex-1">Record-Level Attack Trace</p>
@@ -531,7 +659,7 @@ function ProsecutorReport({
         )}
       </div>
 
-      {/* §4.4 — Attack Simulation Narrative */}
+      {/* Attack Simulation Narrative */}
       {result.topVulnerableRecord && (
         <div className="border border-orange-200 rounded-xl overflow-hidden bg-orange-50/30">
           <div className="px-5 py-4 bg-orange-50 border-b border-orange-200">
@@ -573,7 +701,7 @@ function ProsecutorReport({
         </div>
       )}
 
-      {/* §4.5 — EC Size Distribution */}
+      {/* EC Size Distribution */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <div className="border border-gray-200 rounded-xl p-5 bg-white space-y-3">
           <p className="font-semibold text-black text-sm">EC Size Distribution</p>
@@ -612,7 +740,7 @@ function ProsecutorReport({
         </div>
       </div>
 
-      {/* §4.6 — Link Score Distribution */}
+      {/* Link Score Distribution */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <div className="border border-gray-200 rounded-xl p-5 bg-white space-y-3">
           <p className="font-semibold text-black text-sm">Link Score Distribution</p>
@@ -656,12 +784,12 @@ function ProsecutorReport({
         </div>
       </div>
 
-      {/* §4.7 — L-Diversity */}
+      {/* L-Diversity */}
       {result.lDiversityResults.length > 0 && (
         <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
           <div className="px-5 py-4 bg-gray-50 border-b border-gray-200">
             <p className="font-semibold text-black text-sm">L-Diversity Check</p>
-            <p className="text-xs text-gray-500 mt-0.5">Each equivalence class should have ≥ {result.lDiversityResults.length > 0 ? "l" : "?"} distinct sensitive attribute values</p>
+            <p className="text-xs text-gray-500 mt-0.5">Each equivalence class should have ≥ l distinct sensitive attribute values</p>
           </div>
           {isSingleton && (
             <div className="mx-5 mt-4 flex items-start gap-2.5 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
@@ -689,7 +817,7 @@ function ProsecutorReport({
         </div>
       )}
 
-      {/* §4.8 — T-Closeness */}
+      {/* T-Closeness */}
       {result.tClosenessResults.length > 0 && (
         <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
           <div className="px-5 py-4 bg-gray-50 border-b border-gray-200">
@@ -721,9 +849,8 @@ function ProsecutorReport({
         </div>
       )}
 
-      {/* §4.9 Donut + §4.10 Top 10 */}
+      {/* Donut + Top 10 */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-        {/* Donut */}
         <div className="border border-gray-200 rounded-xl p-5 bg-white space-y-2">
           <p className="font-semibold text-black text-sm">Risk–Protection Split</p>
           <ResponsiveContainer width="100%" height={220}>
@@ -750,7 +877,6 @@ function ProsecutorReport({
           </p>
         </div>
 
-        {/* Top 10 vulnerable */}
         <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
           <div className="px-5 py-4 bg-gray-50 border-b border-gray-200">
             <p className="font-semibold text-black text-sm">Top 10 Most Vulnerable Records</p>
@@ -781,7 +907,7 @@ function ProsecutorReport({
         </div>
       </div>
 
-      {/* §4.11 — Recommendations */}
+      {/* Recommendations */}
       <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
         <div className="px-5 py-4 bg-gray-50 border-b border-gray-200">
           <p className="font-semibold text-black text-sm">Recommendations</p>
