@@ -7,6 +7,7 @@ import NotFound from "@/pages/not-found";
 import FWFConverter from "@/pages/FWFConverter";
 import RiskAssessmentSingle, { pageCache } from "@/pages/RiskAssessmentSingle";
 import RiskAssessmentComparison from "@/pages/RiskAssessmentComparison";
+import { InfoModal } from "@/components/InfoModal";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -39,6 +40,8 @@ function AppLayout() {
           </button>
 
           <div className="flex-1" />
+
+          <InfoModal />
 
           {/* Risk Assessment nav — split buttons */}
           <div className="flex items-center gap-1">
