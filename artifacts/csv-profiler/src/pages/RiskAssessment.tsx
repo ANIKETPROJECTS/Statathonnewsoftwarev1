@@ -4,13 +4,14 @@ import {
   PieChart, Pie, Cell, Legend,
 } from "recharts";
 import {
-  Shield, Upload, Play, Download, AlertTriangle, CheckCircle2,
-  ChevronDown, ChevronRight, Search, X, FileText, Info,
+  Shield, Upload, Play, Download, AlertTriangle,
+  Search, X, FileText, Info, Loader2,
 } from "lucide-react";
 import {
   runProsecutorAttack, parseCSVToRows, downloadRecordCSV, sampleData,
   type ProsecutorResult, type DataRow,
 } from "@/lib/prosecutor-attack";
+import { generateProsecutorReportDocx } from "@/lib/report-docx";
 
 // ── Colors ────────────────────────────────────────────────────────────────────
 
@@ -133,37 +134,29 @@ export default function RiskAssessment() {
   const pageCount = Math.ceil(filteredRows.length / PAGE_SIZE);
   const pageRows = filteredRows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
-  // ── Download full report JSON ──────────────────────────────────────────────
+  // ── Download Word report ───────────────────────────────────────────────────
 
-  const downloadSummaryReport = () => {
-    if (!result) return;
-    const report = {
-      file: loadedFile?.name,
-      fileType: loadedFile?.label,
-      analysedAt: new Date().toISOString(),
-      quasiIdentifiers: result.quasiIdentifiers,
-      sensitiveAttributes: selectedSAs,
-      kThreshold, lThreshold, tThreshold, samplePct,
-      summary: {
-        riskScore: result.riskScore,
-        riskLevel: result.riskLevel,
-        reIdRisk: result.reIdRisk,
-        uniqueRecordsCount: result.uniqueRecordsCount,
-        avgEcSize: result.avgEcSize,
-        minK: result.minK,
-        totalRecords: result.totalRecords,
-        atRiskCount: result.atRiskCount,
-        protectedCount: result.protectedCount,
-      },
-      ecSizeTable: result.ecSizeTable,
-      lDiversityResults: result.lDiversityResults,
-      tClosenessResults: result.tClosenessResults,
-      recommendations: result.recommendations,
-    };
-    triggerBlobDownload(
-      new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }),
-      `prosecutor_attack_report_${new Date().toISOString().slice(0, 10)}.json`
-    );
+  const [docxGenerating, setDocxGenerating] = useState(false);
+
+  const downloadWordReport = async () => {
+    if (!result || !loadedFile) return;
+    setDocxGenerating(true);
+    try {
+      const blob = await generateProsecutorReportDocx(
+        result,
+        loadedFile.label,
+        loadedFile.name,
+        kThreshold,
+        lThreshold,
+        tThreshold,
+        samplePct,
+        selectedSAs,
+      );
+      const date = new Date().toISOString().slice(0, 10);
+      triggerBlobDownload(blob, `prosecutor_attack_report_${date}.docx`);
+    } finally {
+      setDocxGenerating(false);
+    }
   };
 
   // ── UI ─────────────────────────────────────────────────────────────────────
@@ -353,7 +346,8 @@ export default function RiskAssessment() {
             search={search} setSearch={setSearch}
             page={page} setPage={setPage}
             pageRows={pageRows} pageCount={pageCount} filteredRows={filteredRows}
-            downloadSummaryReport={downloadSummaryReport}
+            downloadWordReport={downloadWordReport}
+            docxGenerating={docxGenerating}
           />}
         </div>
       </div>
@@ -367,7 +361,7 @@ function ProsecutorReport({
   result, fileLabel, kThreshold,
   filterMode, setFilterMode, search, setSearch,
   page, setPage, pageRows, pageCount, filteredRows,
-  downloadSummaryReport,
+  downloadWordReport, docxGenerating,
 }: {
   result: ProsecutorResult;
   fileLabel: FileLabel;
@@ -381,7 +375,8 @@ function ProsecutorReport({
   pageRows: ReturnType<typeof result.recordTable.slice>;
   pageCount: number;
   filteredRows: typeof result.recordTable;
-  downloadSummaryReport: () => void;
+  downloadWordReport: () => void;
+  docxGenerating: boolean;
 }) {
   const rc = riskColor(result.reIdRisk);
   const isSingleton = result.totalRecords > 0 && result.equivalenceClasses.length >= 0.9 * result.totalRecords;
@@ -396,9 +391,11 @@ function ProsecutorReport({
           className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-xl border border-gray-200 text-gray-600 hover:text-black hover:border-gray-400 transition-colors font-medium">
           <Download className="w-4 h-4" />Record-level CSV
         </button>
-        <button onClick={downloadSummaryReport}
-          className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-xl border border-indigo-200 text-indigo-700 hover:bg-indigo-50 transition-colors font-medium">
-          <Download className="w-4 h-4" />Summary Report (JSON)
+        <button onClick={downloadWordReport} disabled={docxGenerating}
+          className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-xl border border-indigo-200 text-indigo-700 hover:bg-indigo-50 disabled:opacity-60 transition-colors font-medium">
+          {docxGenerating
+            ? <><Loader2 className="w-4 h-4 animate-spin" />Building Word doc…</>
+            : <><Download className="w-4 h-4" />Download Report (.docx)</>}
         </button>
       </div>
 
