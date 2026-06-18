@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
@@ -51,6 +51,37 @@ interface LoadedFile {
   headers: string[];
   rows: DataRow[];
 }
+
+// ── Module-level state cache (persists across route unmounts) ─────────────────
+
+interface PageState {
+  loadedFile: LoadedFile | null;
+  fileError: string;
+  selectedQIs: string[];
+  selectedSAs: string[];
+  kThreshold: number;
+  lThreshold: number;
+  tThreshold: number;
+  samplePct: number;
+  result: ProsecutorResult | null;
+}
+
+const DEFAULT_PAGE_STATE: PageState = {
+  loadedFile: null,
+  fileError: "",
+  selectedQIs: [],
+  selectedSAs: [],
+  kThreshold: 5,
+  lThreshold: 3,
+  tThreshold: 0.2,
+  samplePct: 100,
+  result: null,
+};
+
+const pageCache: Record<FileMode, PageState> = {
+  original:   { ...DEFAULT_PAGE_STATE },
+  anonymized: { ...DEFAULT_PAGE_STATE },
+};
 
 // ── Accent config ──────────────────────────────────────────────────────────────
 
@@ -105,19 +136,31 @@ export default function RiskAssessmentSingle({ mode }: { mode: FileMode }) {
   const cfg = MODE_CONFIG[mode];
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [loadedFile, setLoadedFile] = useState<LoadedFile | null>(null);
-  const [fileError, setFileError]   = useState("");
-
-  const [selectedQIs, setSelectedQIs] = useState<string[]>([]);
-  const [selectedSAs, setSelectedSAs] = useState<string[]>([]);
-  const [kThreshold, setKThreshold]   = useState(5);
-  const [lThreshold, setLThreshold]   = useState(3);
-  const [tThreshold, setTThreshold]   = useState(0.2);
-  const [samplePct, setSamplePct]     = useState(100);
+  // Initialise from cache so state survives tab switching
+  const cached = pageCache[mode];
+  const [loadedFile, setLoadedFile] = useState<LoadedFile | null>(cached.loadedFile);
+  const [fileError, setFileError]   = useState(cached.fileError);
+  const [selectedQIs, setSelectedQIs] = useState<string[]>(cached.selectedQIs);
+  const [selectedSAs, setSelectedSAs] = useState<string[]>(cached.selectedSAs);
+  const [kThreshold, setKThreshold]   = useState(cached.kThreshold);
+  const [lThreshold, setLThreshold]   = useState(cached.lThreshold);
+  const [tThreshold, setTThreshold]   = useState(cached.tThreshold);
+  const [samplePct, setSamplePct]     = useState(cached.samplePct);
+  const [result, setResult]           = useState<ProsecutorResult | null>(cached.result);
 
   const [running, setRunning]         = useState(false);
-  const [result, setResult]           = useState<ProsecutorResult | null>(null);
   const [docxGenerating, setDocxGenerating] = useState(false);
+
+  // Keep a ref that always holds the latest state for the unmount snapshot
+  const latestRef = useRef<PageState>(cached);
+  useEffect(() => {
+    latestRef.current = { loadedFile, fileError, selectedQIs, selectedSAs, kThreshold, lThreshold, tThreshold, samplePct, result };
+  });
+
+  // Save to cache when this page unmounts (navigation away)
+  useEffect(() => {
+    return () => { pageCache[mode] = { ...latestRef.current }; };
+  }, [mode]);
 
   // ── File handling ──────────────────────────────────────────────────────────
 
