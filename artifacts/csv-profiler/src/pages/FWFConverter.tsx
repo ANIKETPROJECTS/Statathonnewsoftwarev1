@@ -1,8 +1,8 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import {
-  Upload, CheckCircle2, AlertTriangle,
-  X, ArrowRight, Download, Eye, Layers, RotateCcw,
-  Key, Lock, Shuffle, LockOpen, Search, Columns2, Loader2, FileSpreadsheet, ChevronDown,
+  CheckCircle2, AlertTriangle, X, ArrowRight, Download, Eye,
+  Layers, RotateCcw, Key, Lock, Shuffle, LockOpen, Search, Columns2,
+  Loader2, FileSpreadsheet, Plus, FileText, ChevronDown, ChevronRight,
 } from "lucide-react";
 import folderIcon from "@assets/open-folder_1781738999125.png";
 import {
@@ -15,66 +15,103 @@ import {
 } from "@/lib/anonymize";
 import { exportAs, EXPORT_FORMATS, type ExportFormat } from "@/lib/format-export";
 
-type Step = "layout" | "data" | "converted" | "anon-done";
-type LayoutSubStep = "upload" | "sheet-select" | "done";
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface LayoutEntry {
+  id: string;
+  file: File;
+  fileName: string;
+  excelInfo: ExcelFileInfo | null;
+  sheetSelectOpen: boolean;
+  selectedSheet: string;
+  rowFrom: string;
+  rowTo: string;
+  sheetRowCount: number;
+  applyingSheet: boolean;
+  result: ParseLayoutResult | null;
+  error: string;
+}
+
+interface DataFile {
+  id: string;
+  fileName: string;
+  text: string;
+  lineCount: number;
+  layoutId: string;
+  preview: string[][];
+  showPreview: boolean;
+  outputBaseName: string;
+  error: string;
+  activated: boolean;
+  step: "ready" | "anon-done";
+  encColsList: string[];
+  encRunning: boolean;
+  encProgress: number;
+  encResultKey: string | null;
+  encResultBlob: Blob | null;
+  encError: string;
+  exportingFmts: string[];
+  origDownloading: boolean;
+  origProgress: number;
+}
+
 type AnonMode = "encrypt" | "decrypt";
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+function triggerDownload(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+function patchLayout(
+  set: React.Dispatch<React.SetStateAction<LayoutEntry[]>>,
+  id: string,
+  patch: Partial<LayoutEntry>
+) {
+  set(prev => prev.map(l => l.id === id ? { ...l, ...patch } : l));
+}
+
+function patchFile(
+  set: React.Dispatch<React.SetStateAction<DataFile[]>>,
+  id: string,
+  patch: Partial<DataFile>
+) {
+  set(prev => prev.map(df => df.id === id ? { ...df, ...patch } : df));
+}
+
+function blankDataFile(file: File): DataFile {
+  return {
+    id: uid(), fileName: file.name, text: "", lineCount: 0,
+    layoutId: "", preview: [], showPreview: false,
+    outputBaseName: file.name.replace(/\.[^.]+$/, ""), error: "",
+    activated: false, step: "ready", encColsList: [],
+    encRunning: false, encProgress: 0,
+    encResultKey: null, encResultBlob: null, encError: "",
+    exportingFmts: [], origDownloading: false, origProgress: 0,
+  };
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 export default function FWFConverter() {
-  const [step, setStep] = useState<Step>("layout");
+  const [layouts, setLayouts] = useState<LayoutEntry[]>([]);
+  const [dataFiles, setDataFiles] = useState<DataFile[]>([]);
 
-  const [layoutSubStep, setLayoutSubStep] = useState<LayoutSubStep>("upload");
-  const [layoutResult, setLayoutResult] = useState<ParseLayoutResult | null>(null);
-  const [layoutFileName, setLayoutFileName] = useState("");
-  const [layoutError, setLayoutError] = useState("");
-
-  const [excelInfo, setExcelInfo] = useState<ExcelFileInfo | null>(null);
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [selectedSheet, setSelectedSheet] = useState("");
-  const [rowFrom, setRowFrom] = useState("");
-  const [rowTo, setRowTo] = useState("");
-  const [sheetRowCount, setSheetRowCount] = useState(0);
-  const [applyingSheet, setApplyingSheet] = useState(false);
-
-  const [dataFileName, setDataFileName] = useState("");
-  const [dataText, setDataText] = useState("");
-  const [dataLineCount, setDataLineCount] = useState(0);
-  const [dataError, setDataError] = useState("");
-  const [preview, setPreview] = useState<string[][]>([]);
-  const [outputBaseName, setOutputBaseName] = useState("");
-
-  const [converting, setConverting] = useState(false);
-
+  // Global key settings (shared across all file encryptions)
   const [anonMode, setAnonMode] = useState<AnonMode>("encrypt");
   const [anonKeyMode, setAnonKeyMode] = useState<"random" | "pbkdf2" | "hex">("random");
   const [anonSeed, setAnonSeed] = useState(42);
   const [anonPassphrase, setAnonPassphrase] = useState("");
-  const [anonPbkdf2Iter, setAnonPbkdf2Iter] = useState(100000);
+  const [anonPbkdf2Iter, setAnonPbkdf2Iter] = useState(100_000);
   const [anonDeterministic, setAnonDeterministic] = useState(true);
   const [anonKeyHexInput, setAnonKeyHexInput] = useState("");
 
-  const [encCols, setEncCols] = useState<Set<string>>(new Set());
-  const [encRunning, setEncRunning] = useState(false);
-  const [encProgress, setEncProgress] = useState(0);
-  const [encResultKey, setEncResultKey] = useState<string | null>(null);
-  const [encResultBlob, setEncResultBlob] = useState<Blob | null>(null);
-  const [encError, setEncError] = useState("");
-  const [keyCopied, setKeyCopied] = useState(false);
-
-  const [origDownloading, setOrigDownloading] = useState(false);
-  const [origProgress, setOrigProgress] = useState(0);
-
-  const [exportingFmt, setExportingFmt] = useState<Set<ExportFormat>>(new Set());
-
-  // Side-by-side compare (encrypt)
-  const [showCompare, setShowCompare] = useState(false);
-  const [compareLoading, setCompareLoading] = useState(false);
-  const [compareData, setCompareData] = useState<{ headers: string[]; original: string[][]; anonymized: string[][] } | null>(null);
-
-  // Side-by-side compare (decrypt)
-  const [showDecryptCompare, setShowDecryptCompare] = useState(false);
-  const [decryptCompareLoading, setDecryptCompareLoading] = useState(false);
-  const [decryptCompareData, setDecryptCompareData] = useState<{ headers: string[]; original: string[][]; anonymized: string[][] } | null>(null);
-
+  // Global decrypt panel
   const [decryptFileName, setDecryptFileName] = useState("");
   const [decryptCsvText, setDecryptCsvText] = useState<string | null>(null);
   const [decryptHeaders, setDecryptHeaders] = useState<string[]>([]);
@@ -84,247 +121,244 @@ export default function FWFConverter() {
   const [decryptBlob, setDecryptBlob] = useState<Blob | null>(null);
   const [decryptError, setDecryptError] = useState("");
 
+  // Compare modal
+  const [showCompare, setShowCompare] = useState(false);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareData, setCompareData] = useState<{ headers: string[]; original: string[][]; anonymized: string[][] } | null>(null);
+  const [compareTotalRows, setCompareTotalRows] = useState(0);
+  const [showDecryptCompare, setShowDecryptCompare] = useState(false);
+  const [decryptCompareLoading, setDecryptCompareLoading] = useState(false);
+  const [decryptCompareData, setDecryptCompareData] = useState<{ headers: string[]; original: string[][]; anonymized: string[][] } | null>(null);
+
   const layoutInputRef = useRef<HTMLInputElement>(null);
   const dataInputRef = useRef<HTMLInputElement>(null);
   const decryptInputRef = useRef<HTMLInputElement>(null);
 
-  const fields: FieldDef[] = layoutResult?.fields ?? [];
-  const allColNames = fields.map((f) => f.varName);
-  const isConverted = step === "converted" || step === "anon-done";
-
-  const triggerDownload = (blob: Blob, name: string) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = name; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-  };
-
   const buildOpts = (): AnonymizeOptions => ({
-    keyMode: anonKeyMode,
-    seed: anonSeed,
-    passphrase: anonPassphrase,
-    pbkdf2Iterations: anonPbkdf2Iter,
-    deterministic: anonDeterministic,
-    keyHex: anonKeyHexInput,
+    keyMode: anonKeyMode, seed: anonSeed,
+    passphrase: anonPassphrase, pbkdf2Iterations: anonPbkdf2Iter,
+    deterministic: anonDeterministic, keyHex: anonKeyHexInput,
   });
 
-  const keyModeLabel =
-    anonKeyMode === "random" ? `seed = ${anonSeed}`
-    : anonKeyMode === "pbkdf2" ? `PBKDF2 (${anonPbkdf2Iter.toLocaleString()} iter)`
-    : "raw hex key";
+  // ── Layout handlers ──────────────────────────────────────────────────────
 
-  const handleLayoutFile = useCallback(async (file: File) => {
-    setLayoutError(""); setLayoutResult(null); setLayoutFileName(file.name);
-    const name = file.name.toLowerCase();
-    if (name.endsWith(".csv") || name.endsWith(".tsv")) {
-      try {
-        const result = await parseLayoutFile(file);
-        if (!result.fields.length) { setLayoutError(result.warnings.join(" ") || "No fields found."); return; }
-        setLayoutResult(result); setLayoutSubStep("done"); setStep("data");
-      } catch (e) { setLayoutError(`Parse error: ${(e as Error).message}`); }
-      return;
-    }
-    try {
-      const info = await readExcelFileInfo(file);
-      if (info.sheetNames.length > 1) {
-        setExcelInfo(info); setPendingFile(file); setSelectedSheet(info.sheetNames[0]);
-        setSheetRowCount(getSheetRowCount(info.buf, info.sheetNames[0]));
-        setRowFrom(""); setRowTo(""); setLayoutSubStep("sheet-select");
+  const handleLayoutFiles = useCallback(async (files: File[]) => {
+    for (const file of files) {
+      const isCSV = /\.(csv|tsv)$/i.test(file.name);
+      const entry: LayoutEntry = {
+        id: uid(), file, fileName: file.name,
+        excelInfo: null, sheetSelectOpen: false,
+        selectedSheet: "", rowFrom: "", rowTo: "",
+        sheetRowCount: 0, applyingSheet: false, result: null, error: "",
+      };
+      setLayouts(prev => [...prev, entry]);
+
+      if (isCSV) {
+        try {
+          const result = await parseLayoutFile(file);
+          patchLayout(setLayouts, entry.id, result.fields.length ? { result } : { error: result.warnings.join(" ") || "No fields found." });
+        } catch (e) { patchLayout(setLayouts, entry.id, { error: `Parse error: ${(e as Error).message}` }); }
       } else {
-        const result = await parseLayoutFile(file);
-        if (!result.fields.length) { setLayoutError(result.warnings.join(" ") || "No fields found."); return; }
-        setLayoutResult(result); setLayoutSubStep("done"); setStep("data");
+        try {
+          const info = await readExcelFileInfo(file);
+          const firstSheet = info.sheetNames[0];
+          const needsPicker = info.sheetNames.length > 1;
+          patchLayout(setLayouts, entry.id, {
+            excelInfo: info,
+            sheetSelectOpen: needsPicker,
+            selectedSheet: firstSheet,
+            sheetRowCount: getSheetRowCount(info.buf, firstSheet),
+          });
+          if (!needsPicker) {
+            const result = await parseLayoutFile(file);
+            patchLayout(setLayouts, entry.id, result.fields.length ? { result } : { error: result.warnings.join(" ") || "No fields found." });
+          }
+        } catch (e) { patchLayout(setLayouts, entry.id, { error: `Read error: ${(e as Error).message}` }); }
       }
-    } catch (e) { setLayoutError(`Read error: ${(e as Error).message}`); }
+    }
   }, []);
 
-  const handleSheetChange = useCallback((sheet: string) => {
-    setSelectedSheet(sheet);
-    if (excelInfo) setSheetRowCount(getSheetRowCount(excelInfo.buf, sheet));
-    setRowFrom(""); setRowTo("");
-  }, [excelInfo]);
-
-  const handleConfirmSheet = useCallback(async () => {
-    if (!pendingFile || !selectedSheet) return;
-    setApplyingSheet(true); setLayoutError("");
+  const confirmSheet = useCallback(async (id: string) => {
+    const lo = layouts.find(l => l.id === id);
+    if (!lo || !lo.selectedSheet) return;
+    patchLayout(setLayouts, id, { applyingSheet: true, error: "" });
     try {
-      const result = await parseLayoutFile(pendingFile, {
-        sheetName: selectedSheet,
-        startRow: rowFrom ? parseInt(rowFrom, 10) : undefined,
-        endRow: rowTo ? parseInt(rowTo, 10) : undefined,
+      const result = await parseLayoutFile(lo.file, {
+        sheetName: lo.selectedSheet,
+        startRow: lo.rowFrom ? parseInt(lo.rowFrom, 10) : undefined,
+        endRow: lo.rowTo ? parseInt(lo.rowTo, 10) : undefined,
       });
-      if (!result.fields.length) { setLayoutError(result.warnings.join(" ") || "No fields found."); return; }
-      setLayoutResult(result); setLayoutSubStep("done"); setStep("data");
-    } catch (e) { setLayoutError(`Parse error: ${(e as Error).message}`); }
-    finally { setApplyingSheet(false); }
-  }, [pendingFile, selectedSheet, rowFrom, rowTo]);
+      patchLayout(setLayouts, id, result.fields.length
+        ? { result, sheetSelectOpen: false, applyingSheet: false }
+        : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
+    } catch (e) { patchLayout(setLayouts, id, { error: `Parse error: ${(e as Error).message}`, applyingSheet: false }); }
+  }, [layouts]);
 
-  const handleAutoDetect = useCallback(async () => {
-    if (!pendingFile) return;
-    setApplyingSheet(true); setLayoutError("");
+  const autoDetectSheet = useCallback(async (id: string) => {
+    const lo = layouts.find(l => l.id === id);
+    if (!lo) return;
+    patchLayout(setLayouts, id, { applyingSheet: true, error: "" });
     try {
-      const result = await parseLayoutFile(pendingFile);
-      if (!result.fields.length) { setLayoutError(result.warnings.join(" ") || "No fields found."); return; }
-      setLayoutResult(result); setLayoutSubStep("done"); setStep("data");
-    } catch (e) { setLayoutError(`Parse error: ${(e as Error).message}`); }
-    finally { setApplyingSheet(false); }
-  }, [pendingFile]);
+      const result = await parseLayoutFile(lo.file);
+      patchLayout(setLayouts, id, result.fields.length
+        ? { result, sheetSelectOpen: false, applyingSheet: false }
+        : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
+    } catch (e) { patchLayout(setLayouts, id, { error: `Parse error: ${(e as Error).message}`, applyingSheet: false }); }
+  }, [layouts]);
 
-  const handleDataFile = useCallback(async (file: File) => {
-    setDataError(""); setDataFileName(file.name);
-    setDataText(""); setDataLineCount(0); setPreview([]);
-    setEncResultBlob(null); setEncResultKey(null); setEncError("");
+  // "Add Range" — clone same Excel file as a new entry with sheet picker open
+  const addRange = useCallback((fromId: string) => {
+    const src = layouts.find(l => l.id === fromId);
+    if (!src?.excelInfo) return;
+    const firstSheet = src.excelInfo.sheetNames[0];
+    const entry: LayoutEntry = {
+      id: uid(), file: src.file, fileName: src.fileName,
+      excelInfo: src.excelInfo, sheetSelectOpen: true,
+      selectedSheet: firstSheet, rowFrom: "", rowTo: "",
+      sheetRowCount: getSheetRowCount(src.excelInfo.buf, firstSheet),
+      applyingSheet: false, result: null, error: "",
+    };
+    setLayouts(prev => [...prev, entry]);
+  }, [layouts]);
 
-    const text = await file.text();
-    const lines = text.split(/\r?\n/).filter((l) => l.length > 0);
-    setDataText(text);
-    setDataLineCount(lines.length);
+  const removeLayout = useCallback((id: string) => {
+    setLayouts(prev => prev.filter(l => l.id !== id));
+    setDataFiles(prev => prev.map(df => df.layoutId === id ? { ...df, layoutId: "", preview: [], activated: false } : df));
+  }, []);
 
-    if (layoutResult) {
-      setPreview(lines.slice(0, 10).map((line) =>
-        layoutResult.fields.map((f) => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
-      ));
+  // ── Data file handlers ───────────────────────────────────────────────────
+
+  const handleDataFiles = useCallback(async (files: File[]) => {
+    for (const file of files) {
+      const df = blankDataFile(file);
+      setDataFiles(prev => [...prev, df]);
+      try {
+        const text = await file.text();
+        const lines = text.split(/\r?\n/).filter(l => l.length > 0);
+        patchFile(setDataFiles, df.id, { text, lineCount: lines.length });
+      } catch (e) { patchFile(setDataFiles, df.id, { error: `Read error: ${(e as Error).message}` }); }
     }
-    setOutputBaseName(file.name.replace(/\.[^.]+$/, ""));
-    setStep("data");
-  }, [layoutResult]);
+  }, []);
 
-  const handleConvert = useCallback(async () => {
-    if (!layoutResult || !dataText) return;
-    setConverting(true);
-    await new Promise((r) => setTimeout(r, 30));
-    setEncCols(new Set(layoutResult.fields.map((f) => f.varName)));
-    setStep("converted");
-    setConverting(false);
-  }, [layoutResult, dataText]);
+  const assignLayout = useCallback((dfId: string, layoutId: string) => {
+    setDataFiles(prev => prev.map(df => {
+      if (df.id !== dfId) return df;
+      const lo = layouts.find(l => l.id === layoutId);
+      let preview: string[][] = [];
+      if (lo?.result && df.text) {
+        const lines = df.text.split(/\r?\n/).filter(l => l.length > 0);
+        preview = lines.slice(0, 10).map(line =>
+          lo.result!.fields.map(f => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
+        );
+      }
+      const encColsList = lo?.result?.fields.map(f => f.varName) ?? [];
+      return { ...df, layoutId, preview, activated: false, step: "ready", encColsList, encResultBlob: null, encResultKey: null, encError: "" };
+    }));
+  }, [layouts]);
 
-  const handleEncrypt = useCallback(async () => {
-    if (!layoutResult || !dataText) return;
-    if (encCols.size === 0) { setEncError("Select at least one column to encrypt."); return; }
-    setEncRunning(true); setEncProgress(0); setEncError("");
-    setEncResultBlob(null); setEncResultKey(null);
+  const removeDataFile = useCallback((id: string) => {
+    setDataFiles(prev => prev.filter(df => df.id !== id));
+  }, []);
+
+  const activateDataFile = useCallback((id: string) => {
+    setDataFiles(prev => prev.map(df => {
+      if (df.id !== id) return df;
+      const lo = layouts.find(l => l.id === df.layoutId);
+      const encColsList = lo?.result?.fields.map(f => f.varName) ?? [];
+      return { ...df, activated: true, encColsList };
+    }));
+  }, [layouts]);
+
+  // ── Per-file processing ──────────────────────────────────────────────────
+
+  const handleEncrypt = useCallback(async (dfId: string) => {
+    setDataFiles(prev => {
+      const df = prev.find(d => d.id === dfId);
+      const lo = df ? layouts.find(l => l.id === df.layoutId) : null;
+      if (!df || !lo?.result || !df.text || df.encColsList.length === 0) {
+        return prev.map(d => d.id === dfId
+          ? { ...d, encError: d.encColsList.length === 0 ? "Select at least one column to encrypt." : d.encError }
+          : d);
+      }
+      return prev.map(d => d.id === dfId ? { ...d, encRunning: true, encProgress: 0, encError: "", encResultBlob: null, encResultKey: null } : d);
+    });
+
+    // Use a small timeout so the state update above renders before the heavy work starts
+    await new Promise(r => setTimeout(r, 20));
+
+    const df = dataFiles.find(d => d.id === dfId);
+    const lo = df ? layouts.find(l => l.id === df.layoutId) : null;
+    if (!df || !lo?.result || !df.text) return;
+    if (df.encColsList.length === 0) return;
+
     try {
-      const { blob, keyHex } = await encryptFWFToBlob(dataText, layoutResult.fields, encCols, buildOpts(), setEncProgress);
-      setEncResultBlob(blob);
-      setEncResultKey(keyHex);
-      setStep("anon-done");
-    } catch (e) { setEncError(`Encryption failed: ${(e as Error).message}`); }
-    finally { setEncRunning(false); }
-  }, [layoutResult, dataText, encCols, anonKeyMode, anonSeed, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonKeyHexInput]);
+      const { blob, keyHex } = await encryptFWFToBlob(
+        df.text, lo.result.fields, new Set(df.encColsList), buildOpts(),
+        pct => patchFile(setDataFiles, dfId, { encProgress: pct })
+      );
+      patchFile(setDataFiles, dfId, { encResultBlob: blob, encResultKey: keyHex, step: "anon-done", encRunning: false });
+    } catch (e) {
+      patchFile(setDataFiles, dfId, { encError: `Encryption failed: ${(e as Error).message}`, encRunning: false });
+    }
+  }, [dataFiles, layouts, anonKeyMode, anonSeed, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonKeyHexInput]);
 
-  const handleDownloadOriginal = useCallback(async () => {
-    if (!layoutResult || !dataText) return;
-    setOrigDownloading(true); setOrigProgress(0);
+  const handleDownloadOriginal = useCallback(async (dfId: string) => {
+    const df = dataFiles.find(d => d.id === dfId);
+    const lo = df ? layouts.find(l => l.id === df.layoutId) : null;
+    if (!df || !lo?.result || !df.text) return;
+    patchFile(setDataFiles, dfId, { origDownloading: true, origProgress: 0 });
     try {
-      const blob = await convertFWFToCSV(dataText, layoutResult.fields, { onProgress: setOrigProgress });
-      triggerDownload(blob, `${outputBaseName}.csv`);
-    } finally { setOrigDownloading(false); setOrigProgress(0); }
-  }, [layoutResult, dataText, outputBaseName]);
+      const blob = await convertFWFToCSV(df.text, lo.result.fields, {
+        onProgress: pct => patchFile(setDataFiles, dfId, { origProgress: pct }),
+      });
+      triggerDownload(blob, `${df.outputBaseName}.csv`);
+    } finally { patchFile(setDataFiles, dfId, { origDownloading: false, origProgress: 0 }); }
+  }, [dataFiles, layouts]);
 
-  const handleOpenCompare = useCallback(async () => {
-    if (!layoutResult || !dataText || !encResultBlob) return;
-    setCompareLoading(true);
-    setShowCompare(true);
+  const handleExport = async (dfId: string, fmt: ExportFormat, blob: Blob, fields: FieldDef[], baseName: string) => {
+    patchFile(setDataFiles, dfId, { exportingFmts: [...(dataFiles.find(d => d.id === dfId)?.exportingFmts ?? []), fmt] });
+    await exportAs(fmt, blob, fields, baseName);
+    setDataFiles(prev => prev.map(df => df.id === dfId ? { ...df, exportingFmts: df.exportingFmts.filter(f => f !== fmt) } : df));
+  };
+
+  const handleOpenCompare = async (dfId: string) => {
+    const df = dataFiles.find(d => d.id === dfId);
+    const lo = df ? layouts.find(l => l.id === df.layoutId) : null;
+    if (!df?.encResultBlob || !lo?.result) return;
+    setCompareLoading(true); setShowCompare(true); setCompareTotalRows(df.lineCount);
     try {
       const MAX = 500;
-      const headers = layoutResult.fields.map((f) => f.varName);
-      const fwfLines = dataText.split(/\r?\n/).filter((l) => l.length > 0);
-      const original = fwfLines.slice(0, MAX).map((line) =>
-        layoutResult.fields.map((f) => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
+      const headers = lo.result.fields.map(f => f.varName);
+      const fwfLines = df.text.split(/\r?\n/).filter(l => l.length > 0);
+      const original = fwfLines.slice(0, MAX).map(line =>
+        lo.result!.fields.map(f => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
       );
-      const anonText = await encResultBlob.text();
-      const anonLines = anonText.split(/\r?\n/).filter((l) => l.length > 0);
+      const anonText = await df.encResultBlob.text();
+      const anonLines = anonText.split(/\r?\n/).filter(l => l.length > 0);
       const parseCSVLine = (line: string): string[] => {
-        const cells: string[] = [];
-        let cur = ""; let inQ = false;
-        for (let i = 0; i < line.length; i++) {
-          const ch = line[i];
-          if (ch === '"') { inQ = !inQ; }
-          else if (ch === ',' && !inQ) { cells.push(cur); cur = ""; }
-          else { cur += ch; }
-        }
-        cells.push(cur);
-        return cells;
+        const cells: string[] = []; let cur = ""; let inQ = false;
+        for (const ch of line) { if (ch === '"') { inQ = !inQ; } else if (ch === "," && !inQ) { cells.push(cur); cur = ""; } else { cur += ch; } }
+        cells.push(cur); return cells;
       };
       const anonymized = anonLines.slice(1, MAX + 1).map(parseCSVLine);
       setCompareData({ headers, original, anonymized });
-    } finally {
-      setCompareLoading(false);
-    }
-  }, [layoutResult, dataText, encResultBlob]);
-
-  const handleOpenDecryptCompare = useCallback(async () => {
-    if (!decryptCsvText || !decryptBlob) return;
-    setDecryptCompareLoading(true);
-    setShowDecryptCompare(true);
-    try {
-      const MAX = 500;
-      const parseCSVLine = (line: string): string[] => {
-        const cells: string[] = []; let cur = ""; let inQ = false;
-        for (let i = 0; i < line.length; i++) {
-          const ch = line[i];
-          if (ch === '"') { inQ = !inQ; }
-          else if (ch === ',' && !inQ) { cells.push(cur); cur = ""; }
-          else { cur += ch; }
-        }
-        cells.push(cur); return cells;
-      };
-      const encLines = decryptCsvText.split(/\r?\n/).filter((l) => l.trim().length > 0);
-      const headers = parseCSVLine(encLines[0]);
-      const original = encLines.slice(1, MAX + 1).map(parseCSVLine);
-      const decText = await decryptBlob.text();
-      const decLines = decText.split(/\r?\n/).filter((l) => l.trim().length > 0);
-      const anonymized = decLines.slice(1, MAX + 1).map(parseCSVLine);
-      setDecryptCompareData({ headers, original, anonymized });
-    } finally {
-      setDecryptCompareLoading(false);
-    }
-  }, [decryptCsvText, decryptBlob]);
-
-  const handleCopyKey = (k: string) => {
-    navigator.clipboard.writeText(k).then(() => {
-      setKeyCopied(true); setTimeout(() => setKeyCopied(false), 2000);
-    });
+    } finally { setCompareLoading(false); }
   };
 
-  const handleDownloadKey = (k: string) => {
-    const txt = [
-      "AES-256-GCM Symmetric Key",
-      "=".repeat(40),
-      "",
-      `Key (256-bit hex): ${k}`,
-      "",
-      `Key derivation: ${keyModeLabel}`,
-      `Deterministic mode: ${anonDeterministic ? "ON" : "OFF"}`,
-      `Generated: ${new Date().toISOString()}`,
-      "",
-      "IMPORTANT — Store in a secure vault (HSM, AWS KMS, etc.).",
-      "This key is required to decrypt the anonymized CSV.",
-      "AES-256-GCM is symmetric — the same key encrypts and decrypts.",
-    ].join("\n");
-    triggerDownload(new Blob([txt], { type: "text/plain" }), `aes256_key_${outputBaseName || "export"}.txt`);
-  };
+  // ── Decrypt handlers ─────────────────────────────────────────────────────
 
   const handleDecryptFile = useCallback(async (file: File) => {
     setDecryptError(""); setDecryptBlob(null); setDecryptFileName(file.name);
     setDecryptCsvText(null); setDecryptHeaders([]);
     const text = await file.text();
     const headers = readCSVHeaders(text);
-    if (!headers.length) { setDecryptError("Could not read CSV headers — check the file."); return; }
-    setDecryptCsvText(text);
-    setDecryptHeaders(headers);
-    setDecryptCols(new Set(headers));
+    if (!headers.length) { setDecryptError("Could not read CSV headers."); return; }
+    setDecryptCsvText(text); setDecryptHeaders(headers); setDecryptCols(new Set(headers));
   }, []);
 
   const handleDecrypt = useCallback(async () => {
     if (!decryptCsvText) { setDecryptError("Upload an encrypted CSV first."); return; }
     if (decryptCols.size === 0) { setDecryptError("Select at least one column to decrypt."); return; }
-    if (anonKeyMode === "hex" && anonKeyHexInput.trim().length !== 64) {
-      setDecryptError("Raw hex key must be exactly 64 hex characters."); return;
-    }
-    if (anonKeyMode === "pbkdf2" && !anonPassphrase.trim()) {
-      setDecryptError("Enter the passphrase used during encryption."); return;
-    }
     setDecryptRunning(true); setDecryptProgress(0); setDecryptError(""); setDecryptBlob(null);
     try {
       const blob = await decryptCSVToBlob(decryptCsvText, decryptCols, buildOpts(), setDecryptProgress);
@@ -333,411 +367,560 @@ export default function FWFConverter() {
     finally { setDecryptRunning(false); }
   }, [decryptCsvText, decryptCols, anonKeyMode, anonSeed, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonKeyHexInput]);
 
-  const handleReset = () => {
-    setStep("layout"); setLayoutSubStep("upload");
-    setLayoutResult(null); setLayoutFileName(""); setLayoutError("");
-    setExcelInfo(null); setPendingFile(null); setSelectedSheet("");
-    setRowFrom(""); setRowTo(""); setSheetRowCount(0);
-    setDataFileName(""); setDataText(""); setDataLineCount(0);
-    setDataError(""); setPreview([]);
-    setEncCols(new Set()); setEncResultBlob(null); setEncResultKey(null); setEncError("");
-    setDecryptFileName(""); setDecryptCsvText(null); setDecryptHeaders([]);
-    setDecryptCols(new Set()); setDecryptBlob(null); setDecryptError("");
-  };
+  const handleOpenDecryptCompare = useCallback(async () => {
+    if (!decryptCsvText || !decryptBlob) return;
+    setDecryptCompareLoading(true); setShowDecryptCompare(true);
+    try {
+      const MAX = 500;
+      const parseCSVLine = (line: string): string[] => {
+        const cells: string[] = []; let cur = ""; let inQ = false;
+        for (const ch of line) { if (ch === '"') { inQ = !inQ; } else if (ch === "," && !inQ) { cells.push(cur); cur = ""; } else { cur += ch; } }
+        cells.push(cur); return cells;
+      };
+      const encLines = decryptCsvText.split(/\r?\n/).filter(l => l.trim().length > 0);
+      const headers = parseCSVLine(encLines[0]);
+      const original = encLines.slice(1, MAX + 1).map(parseCSVLine);
+      const decText = await decryptBlob.text();
+      const decLines = decText.split(/\r?\n/).filter(l => l.trim().length > 0);
+      const anonymized = decLines.slice(1, MAX + 1).map(parseCSVLine);
+      setDecryptCompareData({ headers, original, anonymized });
+    } finally { setDecryptCompareLoading(false); }
+  }, [decryptCsvText, decryptBlob]);
+
+  // ── Computed ─────────────────────────────────────────────────────────────
+
+  const readyLayouts = layouts.filter(l => l.result !== null);
+  const assignedFiles = dataFiles.filter(df => df.layoutId !== "");
+  const activatedFiles = dataFiles.filter(df => df.activated);
+  const keyModeLabel = anonKeyMode === "random" ? `seed = ${anonSeed}` : anonKeyMode === "pbkdf2" ? `PBKDF2 (${anonPbkdf2Iter.toLocaleString()} iter)` : "raw hex key";
+
+  const phase = readyLayouts.length === 0 ? 0 : assignedFiles.length === 0 ? 1 : 2;
 
   return (
     <div className="space-y-8">
-      {/* Step indicator */}
+
+      {/* ── Step indicator ────────────────────────────────────────────────── */}
       <div className="flex items-center justify-center gap-3 flex-wrap">
-        {(["Upload layout", "Upload data file", "Convert", "Anonymize & download"] as const).map((label, idx) => {
-          const n = idx + 1;
-          const done =
-            n === 1 ? step !== "layout" :
-            n === 2 ? isConverted :
-            n === 3 ? isConverted :
-            step === "anon-done";
-          const active =
-            n === 1 ? step === "layout" :
-            n === 2 ? step === "data" :
-            n === 3 ? step === "data" && !isConverted :
-            step === "converted";
-          return (
-            <span key={n} className="flex items-center gap-3">
-              {idx > 0 && <ArrowRight className="w-4 h-4 text-gray-300 flex-shrink-0" />}
-              <StepBadge n={n} label={label} active={active} done={done} />
-            </span>
-          );
-        })}
+        {(["Upload layouts", "Assign to data files", "Process & download"] as const).map((label, idx) => (
+          <span key={idx} className="flex items-center gap-3">
+            {idx > 0 && <ArrowRight className="w-4 h-4 text-gray-300 flex-shrink-0" />}
+            <StepBadge n={idx + 1} label={label} active={idx === phase} done={idx < phase} />
+          </span>
+        ))}
       </div>
 
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_1fr] min-w-0">
-        {/* ── Step 1: Layout ─────────────────────────────────────────────── */}
-        <div className="border border-gray-200 rounded-2xl p-6 space-y-5 min-w-0 overflow-hidden">
-          <div className="flex items-start justify-between">
+      {/* ── Two-panel: layout manager + data file manager ─────────────────── */}
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-2 min-w-0">
+
+        {/* LEFT: Layout Manager */}
+        <div className="border border-gray-200 rounded-2xl p-6 space-y-4 min-w-0 overflow-hidden">
+          <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-black">Step 1 — Layout file</h2>
-              <p className="text-sm text-gray-500 mt-1">Excel (.xlsx) or CSV with Field_Name, Start, End columns</p>
+              <h2 className="text-lg font-semibold text-black">Step 1 — Layout files</h2>
+              <p className="text-sm text-gray-500 mt-0.5">Excel (.xlsx) or CSV with Field_Name, Start, End columns</p>
             </div>
-            {(layoutResult || layoutSubStep === "sheet-select") && (
-              <button onClick={handleReset} className="text-gray-400 hover:text-black mt-1"><X className="w-5 h-5" /></button>
-            )}
+            <button
+              onClick={() => layoutInputRef.current?.click()}
+              className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-xl bg-black text-white hover:bg-gray-800 transition-colors flex-shrink-0">
+              <Plus className="w-4 h-4" />Add layout
+            </button>
+            <input ref={layoutInputRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden"
+              onChange={e => { const f = Array.from(e.target.files ?? []); if (f.length) handleLayoutFiles(f); e.target.value = ""; }} />
           </div>
 
-          {layoutSubStep === "upload" && (
-            <>
-              <DropZone accept=".xlsx,.xls,.csv" icon={<img src={folderIcon} className="w-24 h-24 object-contain" alt="" />}
-                label="Drop layout file here" sublabel="Excel or CSV"
-                inputRef={layoutInputRef} onFile={handleLayoutFile} />
-              {layoutError && <ErrorBox message={layoutError} />}
-            </>
-          )}
-
-          {layoutSubStep === "sheet-select" && excelInfo && (
-            <div className="space-y-5">
-              <InfoBadge icon={<FileSpreadsheet className="w-4 h-4" />} text={`${layoutFileName} — ${excelInfo.sheetNames.length} sheets`} />
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-black flex items-center gap-2"><Layers className="w-4 h-4" />Select sheet</label>
-                <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
-                  {excelInfo.sheetNames.map((name) => (
-                    <label key={name} className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border cursor-pointer text-sm transition-colors ${selectedSheet === name ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500"}`}>
-                      <input type="radio" name="sheet" value={name} checked={selectedSheet === name} onChange={() => handleSheetChange(name)} className="accent-blue-600" />
-                      <span className="font-medium">{name}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-semibold text-black">Row range {sheetRowCount > 0 && <span className="font-normal text-gray-500">({sheetRowCount} rows)</span>}</label>
-                  {(rowFrom || rowTo) && <button onClick={() => { setRowFrom(""); setRowTo(""); }} className="text-sm text-gray-400 hover:text-black flex items-center gap-1"><RotateCcw className="w-3.5 h-3.5" />All rows</button>}
-                </div>
-                <div className="flex items-center gap-3">
-                  {[{ label: "From", val: rowFrom, set: setRowFrom, ph: "1" }, { label: "To", val: rowTo, set: setRowTo, ph: sheetRowCount ? String(sheetRowCount) : "last" }].map(({ label, val, set, ph }, i) => (
-                    <div key={i} className="flex-1 space-y-1">
-                      <p className="text-sm text-gray-500">{label} row</p>
-                      <input type="number" min={1} placeholder={ph} value={val} onChange={(e) => set(e.target.value)}
-                        className="w-full px-3 py-2 text-sm rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" />
-                    </div>
-                  ))}
-                </div>
-              </div>
-              {layoutError && <ErrorBox message={layoutError} />}
-              <div className="flex flex-col gap-2">
-                <button onClick={handleConfirmSheet} disabled={applyingSheet || !selectedSheet}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
-                  {applyingSheet ? <><Spin />Parsing…</> : <><ArrowRight className="w-4 h-4" />Use selected sheet</>}
-                </button>
-                <button onClick={handleAutoDetect} disabled={applyingSheet}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors">
-                  <Upload className="w-4 h-4" />Auto-detect layout sheet
-                </button>
-              </div>
-            </div>
-          )}
-
-          {layoutSubStep === "done" && layoutResult && (
-            <div className="space-y-4">
-              <SuccessBadge text={`${layoutFileName} — ${fields.length} fields${layoutResult.sheetName ? ` (${layoutResult.sheetName})` : ""}`} />
-              {layoutResult.warnings.length > 0 && <WarnBox message={layoutResult.warnings.join(" ")} />}
-              <div className="overflow-auto max-h-[480px] rounded-xl border border-gray-200">
-                <table className="w-full text-sm border-collapse">
-                  <thead className="bg-gray-50 sticky top-0">
-                    <tr>{["#", "Variable", "Full Name", "Start", "End", "Len"].map((h) => (
-                      <th key={h} className="px-3 py-2.5 text-left border-r last:border-r-0 border-gray-200 text-gray-500 font-semibold">{h}</th>
-                    ))}</tr>
-                  </thead>
-                  <tbody>
-                    {fields.map((f) => (
-                      <tr key={f.srlNo} className="border-t border-gray-100 hover:bg-gray-50">
-                        <td className="px-3 py-2 text-gray-400 font-mono border-r border-gray-100">{f.srlNo}</td>
-                        <td className="px-3 py-2 font-semibold text-black border-r border-gray-100 whitespace-nowrap">{f.varName}</td>
-                        <td className="px-3 py-2 text-gray-600 border-r border-gray-100">{f.fullName}</td>
-                        <td className="px-3 py-2 text-center font-mono text-black border-r border-gray-100">{f.start}</td>
-                        <td className="px-3 py-2 text-center font-mono text-black border-r border-gray-100">{f.end}</td>
-                        <td className="px-3 py-2 text-center font-mono text-black">{f.length}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+          {layouts.length === 0 ? (
+            <DropZone accept=".xlsx,.xls,.csv" multiple icon={<img src={folderIcon} className="w-20 h-20 object-contain" alt="" />}
+              label="Drop layout files here" sublabel="Excel or CSV — multiple files supported"
+              inputRef={layoutInputRef} onFiles={handleLayoutFiles} />
+          ) : (
+            <div className="space-y-3">
+              {layouts.map(lo => (
+                <LayoutCard key={lo.id} lo={lo}
+                  onConfirmSheet={() => confirmSheet(lo.id)}
+                  onAutoDetect={() => autoDetectSheet(lo.id)}
+                  onSheetChange={sheet => patchLayout(setLayouts, lo.id, {
+                    selectedSheet: sheet,
+                    sheetRowCount: lo.excelInfo ? getSheetRowCount(lo.excelInfo.buf, sheet) : 0,
+                    rowFrom: "", rowTo: "",
+                  })}
+                  onRangeChange={(from, to) => patchLayout(setLayouts, lo.id, { rowFrom: from, rowTo: to })}
+                  onAddRange={() => addRange(lo.id)}
+                  onRemove={() => removeLayout(lo.id)}
+                />
+              ))}
+              <button onClick={() => layoutInputRef.current?.click()}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-dashed border-gray-200 text-sm text-gray-400 hover:border-blue-400 hover:text-blue-600 transition-colors">
+                <Plus className="w-4 h-4" />Add more layout files
+              </button>
             </div>
           )}
         </div>
 
-        {/* ── Step 2 + 3: Data & Convert ─────────────────────────────────── */}
-        <div className="border border-gray-200 rounded-2xl p-6 space-y-5 min-w-0 overflow-hidden">
-          <div>
-            <h2 className="text-lg font-semibold text-black">Step 2 — Fixed-width data file</h2>
-            <p className="text-sm text-gray-500 mt-1">The .TXT file containing the actual records</p>
+        {/* RIGHT: Data File Manager */}
+        <div className="border border-gray-200 rounded-2xl p-6 space-y-4 min-w-0 overflow-hidden">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-black">Step 2 — Data files (.TXT)</h2>
+              <p className="text-sm text-gray-500 mt-0.5">Fixed-width records — assign a layout to each</p>
+            </div>
+            <button
+              onClick={() => dataInputRef.current?.click()}
+              disabled={readyLayouts.length === 0}
+              className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-xl bg-black text-white hover:bg-gray-800 disabled:opacity-40 transition-colors flex-shrink-0">
+              <Plus className="w-4 h-4" />Add files
+            </button>
+            <input ref={dataInputRef} type="file" accept=".txt,.dat,.fwf,.data" multiple className="hidden"
+              onChange={e => { const f = Array.from(e.target.files ?? []); if (f.length) handleDataFiles(f); e.target.value = ""; }} />
           </div>
 
-          {!layoutResult ? (
-            <div className="flex items-center justify-center h-44 text-base text-gray-400 border-2 border-dashed border-gray-200 rounded-2xl">
-              Complete Step 1 first
+          {readyLayouts.length === 0 ? (
+            <div className="flex items-center justify-center h-44 text-sm text-gray-400 border-2 border-dashed border-gray-200 rounded-2xl text-center px-6">
+              Load at least one layout first
             </div>
-          ) : !dataFileName ? (
-            <DropZone accept=".txt,.dat,.fwf,.data" icon={<img src={folderIcon} className="w-24 h-24 object-contain" alt="" />}
-              label="Drop fixed-width data file here" sublabel=".TXT, .DAT or any fixed-width file"
-              inputRef={dataInputRef} onFile={handleDataFile} />
+          ) : dataFiles.length === 0 ? (
+            <DropZone accept=".txt,.dat,.fwf,.data" multiple icon={<img src={folderIcon} className="w-20 h-20 object-contain" alt="" />}
+              label="Drop data files here" sublabel=".TXT, .DAT or any fixed-width file"
+              inputRef={dataInputRef} onFiles={handleDataFiles} />
           ) : (
-            <div className="space-y-5">
-              <div className="flex items-center gap-2">
-                <SuccessBadge text={`${dataFileName} — ${dataLineCount.toLocaleString()} records`} />
-                {!isConverted && (
-                  <button onClick={() => { setDataFileName(""); setDataText(""); setDataLineCount(0); setPreview([]); setStep("data"); }}
-                    className="ml-auto text-gray-400 hover:text-black flex-shrink-0"><X className="w-4 h-4" /></button>
-                )}
-              </div>
-
-              {preview.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-sm text-gray-500 flex items-center gap-1.5"><Eye className="w-4 h-4" />Preview (first {preview.length} rows)</p>
-                  <div className="overflow-auto max-h-48 rounded-xl border border-gray-200 text-xs">
-                    <table className="w-full border-collapse">
-                      <thead className="bg-gray-50 sticky top-0">
-                        <tr>{fields.map((f) => <th key={f.srlNo} className="px-3 py-2 text-left font-semibold text-gray-500 border-r border-gray-200 whitespace-nowrap">{f.varName}</th>)}</tr>
-                      </thead>
-                      <tbody>
-                        {preview.map((row, ri) => (
-                          <tr key={ri} className="border-t border-gray-100">
-                            {row.map((cell, ci) => (
-                              <td key={ci} className="px-3 py-1.5 font-mono border-r border-gray-100 whitespace-nowrap text-black">
-                                {cell || <span className="text-gray-300 italic">—</span>}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {dataError && <ErrorBox message={dataError} />}
-
-              {!isConverted ? (
-                <button onClick={handleConvert} disabled={converting}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
-                  {converting ? <><Spin />Preparing…</> : <><ArrowRight className="w-4 h-4" />Convert {dataLineCount.toLocaleString()} records → proceed to anonymize</>}
-                </button>
-              ) : (
-                <SuccessBadge text={`${dataLineCount.toLocaleString()} records ready · ${fields.length} columns · see Step 4 below ↓`} />
-              )}
+            <div className="space-y-3">
+              {dataFiles.map(df => (
+                <DataFileRow key={df.id} df={df} readyLayouts={readyLayouts}
+                  onAssign={lid => assignLayout(df.id, lid)}
+                  onTogglePreview={() => patchFile(setDataFiles, df.id, { showPreview: !df.showPreview })}
+                  onProcess={() => activateDataFile(df.id)}
+                  onRemove={() => removeDataFile(df.id)}
+                />
+              ))}
+              <button onClick={() => dataInputRef.current?.click()}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-dashed border-gray-200 text-sm text-gray-400 hover:border-blue-400 hover:text-blue-600 transition-colors">
+                <Plus className="w-4 h-4" />Add more data files
+              </button>
             </div>
           )}
         </div>
       </div>
 
-      {/* ── Step 4: Anonymize ─────────────────────────────────────────────── */}
-      {isConverted && layoutResult && (
-        <div className="border border-gray-200 rounded-2xl overflow-hidden min-w-0">
-          {/* Step 4 header bar */}
+      {/* ── Global encryption settings (shown when any file is activated) ── */}
+      {activatedFiles.length > 0 && (
+        <div className="border border-gray-200 rounded-2xl overflow-hidden">
           <div className="bg-emerald-50 border-b border-emerald-100 px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4">
             <div className="flex items-center gap-4 flex-1 min-w-0">
               <div className="w-12 h-12 rounded-2xl bg-white border border-emerald-200 flex items-center justify-center flex-shrink-0">
-                <img src={`${import.meta.env.BASE_URL}shield-check.png`} alt="Security" className="w-7 h-7 object-contain" style={{ filter: "invert(48%) sepia(79%) saturate(476%) hue-rotate(86deg) brightness(95%) contrast(93%)" }} />
+                <Lock className="w-6 h-6 text-emerald-600" />
               </div>
-              <div className="min-w-0">
-                <h2 className="text-lg font-semibold text-black">Step 4 — AES-256-GCM Encrypt / Decrypt</h2>
-                <p className="text-sm text-gray-500 mt-0.5">Format-preserving encryption · digits→digits · letters→letters</p>
+              <div>
+                <h2 className="text-lg font-semibold text-black">Step 3 — AES-256-GCM Encrypt / Decrypt</h2>
+                <p className="text-sm text-gray-500 mt-0.5">Key settings apply to all files below</p>
               </div>
             </div>
             <div className="flex items-center rounded-xl border border-emerald-200 overflow-hidden text-sm font-semibold flex-shrink-0 bg-white">
-              {(["encrypt", "decrypt"] as const).map((m) => (
-                <button key={m} onClick={() => { setAnonMode(m); setEncError(""); setDecryptError(""); }}
-                  className={`flex items-center gap-2 px-5 py-2.5 transition-colors ${m !== "encrypt" ? "border-l border-gray-200" : ""} ${anonMode === m ? "bg-emerald-500 text-white border-emerald-500" : "hover:bg-gray-50 text-gray-500"}`}>
+              {(["encrypt", "decrypt"] as const).map(m => (
+                <button key={m} onClick={() => setAnonMode(m)}
+                  className={`flex items-center gap-2 px-5 py-2.5 transition-colors ${m !== "encrypt" ? "border-l border-gray-200" : ""} ${anonMode === m ? "bg-emerald-500 text-white" : "hover:bg-gray-50 text-gray-500"}`}>
                   {m === "encrypt" ? <Lock className="w-4 h-4" /> : <LockOpen className="w-4 h-4" />}
                   {m === "encrypt" ? "Encrypt" : "Decrypt"}
                 </button>
               ))}
             </div>
           </div>
-
-          <div className="p-6 space-y-6">
-
-          <KeySettings
-            keyMode={anonKeyMode} setKeyMode={setAnonKeyMode}
-            seed={anonSeed} setSeed={setAnonSeed}
-            passphrase={anonPassphrase} setPassphrase={setAnonPassphrase}
-            pbkdf2Iter={anonPbkdf2Iter} setPbkdf2Iter={setAnonPbkdf2Iter}
-            deterministic={anonDeterministic} setDeterministic={setAnonDeterministic}
-            keyHexInput={anonKeyHexInput} setKeyHexInput={setAnonKeyHexInput}
-          />
-
-          {/* ENCRYPT */}
-          {anonMode === "encrypt" && (
-            <div className="space-y-5">
-              <ColSelector allCols={allColNames} selected={encCols} onChange={setEncCols} label="Columns to encrypt" />
-
-              {encError && <ErrorBox message={encError} />}
-              {encRunning && <ProgressBar pct={encProgress} label={`Encrypting ${encCols.size} column${encCols.size !== 1 ? "s" : ""} across ${dataLineCount.toLocaleString()} records…`} icon={<Shuffle className="w-4 h-4 animate-spin" />} />}
-              {origDownloading && <ProgressBar pct={origProgress} label="Building original CSV…" icon={<Download className="w-4 h-4 animate-pulse" />} />}
-
-              {step !== "anon-done" && (
-                <div className="flex flex-col sm:flex-row gap-3">
-                  <button onClick={handleEncrypt} disabled={encRunning || origDownloading || encCols.size === 0}
-                    className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
-                    {encRunning ? <><Spin />Encrypting…</> : <><Lock className="w-4 h-4" />Apply AES-256-GCM encryption</>}
-                  </button>
-                  <button onClick={handleDownloadOriginal} disabled={encRunning || origDownloading}
-                    className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors">
-                    {origDownloading ? <><Spin />Building…</> : <><Download className="w-4 h-4" />Skip — download original</>}
-                  </button>
-                </div>
-              )}
-
-              {step === "anon-done" && encResultBlob && encResultKey && (
-                <div className="space-y-5">
-                  <SuccessBadge text={`Encryption complete — ${encCols.size} column${encCols.size !== 1 ? "s" : ""} encrypted across ${dataLineCount.toLocaleString()} records`} />
-
-                  <div className="border-l-4 border-amber-400 bg-amber-50 rounded-r-xl p-5 space-y-3">
-                    <p className="text-sm font-semibold text-amber-800 flex items-center gap-2"><Key className="w-4 h-4" />Symmetric Key — save this to decrypt later</p>
-                    <div className="font-mono text-xs bg-white rounded-lg px-4 py-3 break-all select-all cursor-text leading-relaxed text-black border border-amber-200">
-                      {encResultKey}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm text-amber-700 flex-1 min-w-0">AES-256 · {keyModeLabel} · det. {anonDeterministic ? "ON" : "OFF"}</span>
-                      <button onClick={() => handleCopyKey(encResultKey)} className="text-sm px-3 py-1.5 rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors whitespace-nowrap font-medium">
-                        {keyCopied ? "✓ Copied!" : "Copy key"}
-                      </button>
-                      <button onClick={() => handleDownloadKey(encResultKey)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors whitespace-nowrap font-medium">
-                        <Download className="w-3.5 h-3.5" />Download key (.txt)
-                      </button>
-                    </div>
-                    <p className="text-sm text-amber-700">⚠ Same key decrypts. Store in a secure vault — never log or share.</p>
-                  </div>
-
-                  {/* Format download panel */}
-                  <div className="border border-gray-200 rounded-xl overflow-hidden">
-                    {/* Header row */}
-                    {/* Format rows */}
-                    {EXPORT_FORMATS.map((fmt, idx) => {
-                      const isRunning = exportingFmt.has(fmt.id);
-                      return (
-                        <div
-                          key={fmt.id}
-                          className={`flex items-center gap-3 px-4 py-3 bg-white ${idx !== EXPORT_FORMATS.length - 1 ? "border-b border-gray-100" : ""}`}
-                        >
-                          <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono flex-shrink-0">{fmt.ext}</span>
-                          <span className="flex-1 min-w-0">
-                            <span className="text-sm font-semibold text-black block">{fmt.label}</span>
-                            <span className="text-xs text-gray-400 truncate block">{fmt.description}</span>
-                          </span>
-                          <button
-                            disabled={isRunning}
-                            onClick={async () => {
-                              if (!encResultBlob) return;
-                              setExportingFmt(prev => new Set([...prev, fmt.id]));
-                              await exportAs(fmt.id, encResultBlob, fields, outputBaseName);
-                              setExportingFmt(prev => { const s = new Set(prev); s.delete(fmt.id); return s; });
-                            }}
-                            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0 whitespace-nowrap"
-                          >
-                            {isRunning
-                              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Saving…</>
-                              : <><Download className="w-3.5 h-3.5" />Download</>
-                            }
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Side-by-side + original */}
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <button onClick={handleOpenCompare}
-                      className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
-                      <Columns2 className="w-4 h-4" />View side by side
-                    </button>
-                    <button onClick={handleDownloadOriginal} disabled={origDownloading}
-                      className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors">
-                      {origDownloading ? <><Spin />Building…</> : <><Download className="w-4 h-4" />Download original CSV</>}
-                    </button>
-                  </div>
-                  {origDownloading && <ProgressBar pct={origProgress} label="Building original CSV…" icon={<Download className="w-4 h-4 animate-pulse" />} />}
-
-                  <button onClick={() => { setEncResultBlob(null); setEncResultKey(null); setEncProgress(0); setStep("converted"); }}
-                    className="w-full text-sm text-gray-400 hover:text-black text-center transition-colors">
-                    ← Change column selection or key settings
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* DECRYPT */}
-          {anonMode === "decrypt" && (
-            <div className="space-y-5">
-              <div className="space-y-2">
-                <p className="text-base font-semibold text-black">Upload anonymized CSV to decrypt</p>
-                <p className="text-sm text-gray-500">Must have been encrypted by this tool with matching key settings.</p>
-
-                {!decryptCsvText ? (
-                  <DropZone accept=".csv" icon={<LockOpen className="w-9 h-9 text-blue-600" />}
-                    label="Drop anonymized CSV here" sublabel=".CSV encrypted by this tool"
-                    inputRef={decryptInputRef} onFile={handleDecryptFile} />
-                ) : (
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2">
-                      <SuccessBadge text={`${decryptFileName} — ${decryptHeaders.length} columns detected`} />
-                      <button onClick={() => { setDecryptFileName(""); setDecryptCsvText(null); setDecryptHeaders([]); setDecryptCols(new Set()); setDecryptBlob(null); }}
-                        className="ml-auto text-gray-400 hover:text-black flex-shrink-0"><X className="w-4 h-4" /></button>
-                    </div>
-                    <ColSelector allCols={decryptHeaders} selected={decryptCols} onChange={setDecryptCols} label="Columns to decrypt" />
-                  </div>
-                )}
-              </div>
-
-              {decryptError && <ErrorBox message={decryptError} />}
-              {decryptRunning && <ProgressBar pct={decryptProgress} label={`Decrypting ${decryptCols.size} column${decryptCols.size !== 1 ? "s" : ""}…`} icon={<Shuffle className="w-4 h-4 animate-spin" />} />}
-
-              {!decryptBlob ? (
-                <button onClick={handleDecrypt} disabled={decryptRunning || !decryptCsvText || decryptCols.size === 0}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
-                  {decryptRunning ? <><Spin />Decrypting…</> : <><LockOpen className="w-4 h-4" />Apply AES-256-GCM decryption</>}
-                </button>
-              ) : (
-                <div className="space-y-4">
-                  <SuccessBadge text="Decryption complete — original values restored" />
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <button onClick={() => triggerDownload(decryptBlob!, `${decryptFileName.replace(/\.csv$/i, "")}_decrypted.csv`)}
-                      className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 text-white text-base font-semibold hover:bg-emerald-700 transition-colors">
-                      <Download className="w-4 h-4" />Download decrypted CSV
-                    </button>
-                    <button onClick={handleOpenDecryptCompare}
-                      className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
-                      <Columns2 className="w-4 h-4" />View side by side
-                    </button>
-                    <button onClick={() => { setDecryptBlob(null); setDecryptProgress(0); }}
-                      className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 transition-colors">
-                      ← Change settings
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          </div>{/* end p-6 content */}
+          <div className="p-6">
+            <KeySettings
+              keyMode={anonKeyMode} setKeyMode={setAnonKeyMode}
+              seed={anonSeed} setSeed={setAnonSeed}
+              passphrase={anonPassphrase} setPassphrase={setAnonPassphrase}
+              pbkdf2Iter={anonPbkdf2Iter} setPbkdf2Iter={setAnonPbkdf2Iter}
+              deterministic={anonDeterministic} setDeterministic={setAnonDeterministic}
+              keyHexInput={anonKeyHexInput} setKeyHexInput={setAnonKeyHexInput}
+            />
+          </div>
         </div>
       )}
-      {/* Side-by-side compare modal */}
+
+      {/* ── Per-file processing cards ─────────────────────────────────────── */}
+      {activatedFiles.map(df => {
+        const lo = layouts.find(l => l.id === df.layoutId);
+        if (!lo?.result) return null;
+        const fields = lo.result.fields;
+        const allColNames = fields.map(f => f.varName);
+        const encCols = new Set(df.encColsList);
+
+        return (
+          <div key={df.id} className="border border-gray-200 rounded-2xl overflow-hidden">
+            {/* Card header */}
+            <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex items-center gap-3">
+              <FileText className="w-4 h-4 text-gray-400 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-black text-sm truncate">{df.fileName}</p>
+                <p className="text-xs text-gray-500 mt-0.5">{df.lineCount.toLocaleString()} records · {fields.length} columns · layout: {lo.result.sheetName || lo.fileName}</p>
+              </div>
+              {df.step === "anon-done" && <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg flex-shrink-0"><CheckCircle2 className="w-3.5 h-3.5" />Done</span>}
+              <button onClick={() => patchFile(setDataFiles, df.id, { activated: false })}
+                className="text-gray-400 hover:text-black flex-shrink-0"><X className="w-4 h-4" /></button>
+            </div>
+
+            <div className="p-6 space-y-5">
+
+              {anonMode === "encrypt" && (
+                <>
+                  <ColSelector allCols={allColNames} selected={encCols}
+                    onChange={s => patchFile(setDataFiles, df.id, { encColsList: [...s] })}
+                    label="Columns to encrypt" />
+
+                  {df.encError && <ErrorBox message={df.encError} />}
+                  {df.encRunning && <ProgressBar pct={df.encProgress} label={`Encrypting ${df.encColsList.length} column${df.encColsList.length !== 1 ? "s" : ""} across ${df.lineCount.toLocaleString()} records…`} icon={<Shuffle className="w-4 h-4 animate-spin" />} />}
+                  {df.origDownloading && <ProgressBar pct={df.origProgress} label="Building original CSV…" icon={<Download className="w-4 h-4 animate-pulse" />} />}
+
+                  {df.step !== "anon-done" ? (
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <button onClick={() => handleEncrypt(df.id)} disabled={df.encRunning || df.origDownloading || df.encColsList.length === 0}
+                        className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
+                        {df.encRunning ? <><Spin />Encrypting…</> : <><Lock className="w-4 h-4" />Apply AES-256-GCM encryption</>}
+                      </button>
+                      <button onClick={() => handleDownloadOriginal(df.id)} disabled={df.encRunning || df.origDownloading}
+                        className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors whitespace-nowrap">
+                        <Download className="w-4 h-4" />Download original CSV
+                      </button>
+                    </div>
+                  ) : (
+                    df.encResultBlob && df.encResultKey && (
+                      <div className="space-y-5">
+                        <SuccessBadge text={`Encryption complete — ${df.encColsList.length} column${df.encColsList.length !== 1 ? "s" : ""} encrypted`} />
+
+                        <div className="border-l-4 border-amber-400 bg-amber-50 rounded-r-xl p-5 space-y-3">
+                          <p className="text-sm font-semibold text-amber-800 flex items-center gap-2"><Key className="w-4 h-4" />Symmetric Key — save to decrypt later</p>
+                          <div className="font-mono text-xs bg-white rounded-lg px-4 py-3 break-all select-all cursor-text leading-relaxed text-black border border-amber-200">{df.encResultKey}</div>
+                          <div className="flex flex-wrap gap-2 items-center">
+                            <span className="text-sm text-amber-700 flex-1 min-w-0">AES-256 · {keyModeLabel} · det. {anonDeterministic ? "ON" : "OFF"}</span>
+                            <button onClick={() => navigator.clipboard.writeText(df.encResultKey!)}
+                              className="text-sm px-3 py-1.5 rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors font-medium">Copy key</button>
+                            <button onClick={() => {
+                              const txt = ["AES-256-GCM Symmetric Key", "=".repeat(40), "", `Key (256-bit hex): ${df.encResultKey}`, "", `Key derivation: ${keyModeLabel}`, `Deterministic mode: ${anonDeterministic ? "ON" : "OFF"}`, `File: ${df.fileName}`, `Generated: ${new Date().toISOString()}`, "", "IMPORTANT — Store in a secure vault. Required to decrypt."].join("\n");
+                              triggerDownload(new Blob([txt], { type: "text/plain" }), `key_${df.outputBaseName}.txt`);
+                            }} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors font-medium">
+                              <Download className="w-3.5 h-3.5" />Download key
+                            </button>
+                          </div>
+                          <p className="text-sm text-amber-700">⚠ Same key decrypts. Store securely — never log or share.</p>
+                        </div>
+
+                        {/* Format download panel */}
+                        <div className="border border-gray-200 rounded-xl overflow-hidden">
+                          {EXPORT_FORMATS.map((fmt, idx) => {
+                            const isRunning = df.exportingFmts.includes(fmt.id);
+                            return (
+                              <div key={fmt.id} className={`flex items-center gap-3 px-4 py-3 bg-white ${idx !== EXPORT_FORMATS.length - 1 ? "border-b border-gray-100" : ""}`}>
+                                <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono flex-shrink-0">{fmt.ext}</span>
+                                <span className="flex-1 min-w-0">
+                                  <span className="text-sm font-semibold text-black block">{fmt.label}</span>
+                                  <span className="text-xs text-gray-400 truncate block">{fmt.description}</span>
+                                </span>
+                                <button disabled={isRunning}
+                                  onClick={() => handleExport(df.id, fmt.id, df.encResultBlob!, fields, df.outputBaseName)}
+                                  className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0 whitespace-nowrap">
+                                  {isRunning ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Saving…</> : <><Download className="w-3.5 h-3.5" />Download</>}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row gap-3">
+                          <button onClick={() => handleOpenCompare(df.id)}
+                            className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
+                            <Columns2 className="w-4 h-4" />View side by side
+                          </button>
+                          <button onClick={() => handleDownloadOriginal(df.id)} disabled={df.origDownloading}
+                            className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors">
+                            <Download className="w-4 h-4" />Download original CSV
+                          </button>
+                        </div>
+                        {df.origDownloading && <ProgressBar pct={df.origProgress} label="Building original CSV…" icon={<Download className="w-4 h-4 animate-pulse" />} />}
+
+                        <button onClick={() => patchFile(setDataFiles, df.id, { step: "ready", encResultBlob: null, encResultKey: null, encProgress: 0 })}
+                          className="w-full text-sm text-gray-400 hover:text-black text-center transition-colors">
+                          ← Change column selection or key settings
+                        </button>
+                      </div>
+                    )
+                  )}
+                </>
+              )}
+
+              {anonMode === "decrypt" && (
+                <div className="space-y-5">
+                  <p className="text-sm text-gray-500">Decrypt mode: upload an encrypted CSV created from this or another file.</p>
+                  {!decryptCsvText ? (
+                    <DropZone accept=".csv" icon={<LockOpen className="w-9 h-9 text-blue-600" />}
+                      label="Drop anonymized CSV here" sublabel=".CSV encrypted by this tool"
+                      inputRef={decryptInputRef} onFiles={files => handleDecryptFile(files[0])} />
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2">
+                        <SuccessBadge text={`${decryptFileName} — ${decryptHeaders.length} columns`} />
+                        <button onClick={() => { setDecryptFileName(""); setDecryptCsvText(null); setDecryptHeaders([]); setDecryptCols(new Set()); setDecryptBlob(null); }}
+                          className="ml-auto text-gray-400 hover:text-black"><X className="w-4 h-4" /></button>
+                      </div>
+                      <ColSelector allCols={decryptHeaders} selected={decryptCols} onChange={setDecryptCols} label="Columns to decrypt" />
+                    </div>
+                  )}
+                  {decryptError && <ErrorBox message={decryptError} />}
+                  {decryptRunning && <ProgressBar pct={decryptProgress} label={`Decrypting ${decryptCols.size} column${decryptCols.size !== 1 ? "s" : ""}…`} icon={<Shuffle className="w-4 h-4 animate-spin" />} />}
+                  {!decryptBlob ? (
+                    <button onClick={handleDecrypt} disabled={decryptRunning || !decryptCsvText || decryptCols.size === 0}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
+                      {decryptRunning ? <><Spin />Decrypting…</> : <><LockOpen className="w-4 h-4" />Apply AES-256-GCM decryption</>}
+                    </button>
+                  ) : (
+                    <div className="space-y-4">
+                      <SuccessBadge text="Decryption complete — original values restored" />
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <button onClick={() => triggerDownload(decryptBlob!, `${decryptFileName.replace(/\.csv$/i, "")}_decrypted.csv`)}
+                          className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-colors">
+                          <Download className="w-4 h-4" />Download decrypted CSV
+                        </button>
+                        <button onClick={handleOpenDecryptCompare}
+                          className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
+                          <Columns2 className="w-4 h-4" />View side by side
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* ── Compare modals ────────────────────────────────────────────────── */}
       {showCompare && (
-        <SideBySideModal
-          loading={compareLoading}
-          data={compareData}
-          totalRows={dataLineCount}
-          onClose={() => { setShowCompare(false); setCompareData(null); }}
-        />
+        <SideBySideModal loading={compareLoading} data={compareData} totalRows={compareTotalRows}
+          onClose={() => { setShowCompare(false); setCompareData(null); }} />
       )}
       {showDecryptCompare && (
-        <SideBySideModal
-          loading={decryptCompareLoading}
-          data={decryptCompareData}
+        <SideBySideModal loading={decryptCompareLoading} data={decryptCompareData}
           totalRows={decryptCompareData?.original.length ?? 0}
-          leftLabel="Encrypted"
-          rightLabel="Decrypted"
-          onClose={() => { setShowDecryptCompare(false); setDecryptCompareData(null); }}
-        />
+          leftLabel="Encrypted" rightLabel="Decrypted"
+          onClose={() => { setShowDecryptCompare(false); setDecryptCompareData(null); }} />
+      )}
+    </div>
+  );
+}
+
+// ── LayoutCard ────────────────────────────────────────────────────────────────
+
+function LayoutCard({ lo, onConfirmSheet, onAutoDetect, onSheetChange, onRangeChange, onAddRange, onRemove }: {
+  lo: LayoutEntry;
+  onConfirmSheet: () => void;
+  onAutoDetect: () => void;
+  onSheetChange: (sheet: string) => void;
+  onRangeChange: (from: string, to: string) => void;
+  onAddRange: () => void;
+  onRemove: () => void;
+}) {
+  const done = lo.result !== null;
+  const fields = lo.result?.fields ?? [];
+
+  return (
+    <div className={`border rounded-xl overflow-hidden ${done ? "border-emerald-200" : lo.error ? "border-red-200" : "border-gray-200"}`}>
+      {/* Header row */}
+      <div className={`flex items-center gap-3 px-4 py-3 ${done ? "bg-emerald-50" : lo.error ? "bg-red-50" : "bg-gray-50"}`}>
+        {done
+          ? <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+          : lo.error
+          ? <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
+          : <Spin />}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-black truncate">{lo.fileName}</p>
+          {done && <p className="text-xs text-emerald-700">{fields.length} fields{lo.result?.sheetName ? ` · ${lo.result.sheetName}` : ""}</p>}
+          {lo.error && <p className="text-xs text-red-600 truncate">{lo.error}</p>}
+          {!done && !lo.error && !lo.sheetSelectOpen && <p className="text-xs text-gray-500">Parsing…</p>}
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {done && lo.excelInfo && (
+            <button onClick={onAddRange}
+              className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors font-medium whitespace-nowrap">
+              <Plus className="w-3 h-3" />Add range
+            </button>
+          )}
+          <button onClick={onRemove} className="text-gray-400 hover:text-black"><X className="w-4 h-4" /></button>
+        </div>
+      </div>
+
+      {/* Field preview (when done) */}
+      {done && fields.length > 0 && (
+        <div className="overflow-auto max-h-44 border-t border-gray-100">
+          <table className="w-full text-xs border-collapse">
+            <thead className="bg-gray-50 sticky top-0">
+              <tr>{["#", "Variable", "Full Name", "Start", "End", "Len"].map(h => (
+                <th key={h} className="px-2.5 py-1.5 text-left border-r last:border-r-0 border-gray-200 text-gray-500 font-semibold whitespace-nowrap">{h}</th>
+              ))}</tr>
+            </thead>
+            <tbody>
+              {fields.map(f => (
+                <tr key={f.srlNo} className="border-t border-gray-100 hover:bg-gray-50">
+                  <td className="px-2.5 py-1.5 text-gray-400 font-mono border-r border-gray-100">{f.srlNo}</td>
+                  <td className="px-2.5 py-1.5 font-semibold text-black border-r border-gray-100 whitespace-nowrap">{f.varName}</td>
+                  <td className="px-2.5 py-1.5 text-gray-600 border-r border-gray-100 max-w-[140px] truncate">{f.fullName}</td>
+                  <td className="px-2.5 py-1.5 text-center font-mono text-black border-r border-gray-100">{f.start}</td>
+                  <td className="px-2.5 py-1.5 text-center font-mono text-black border-r border-gray-100">{f.end}</td>
+                  <td className="px-2.5 py-1.5 text-center font-mono text-black">{f.length}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Sheet selector (inline) */}
+      {lo.sheetSelectOpen && lo.excelInfo && (
+        <div className="p-4 space-y-4 border-t border-gray-100 bg-white">
+          <InfoBadge icon={<FileSpreadsheet className="w-4 h-4" />} text={`${lo.excelInfo.sheetNames.length} sheets found — select one`} />
+
+          <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+            {lo.excelInfo.sheetNames.map(name => (
+              <label key={name} className={`flex items-center gap-3 px-3 py-2 rounded-xl border cursor-pointer text-sm transition-colors ${lo.selectedSheet === name ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500"}`}>
+                <input type="radio" name={`sheet-${lo.id}`} value={name} checked={lo.selectedSheet === name} onChange={() => onSheetChange(name)} className="accent-blue-600" />
+                <span className="font-medium truncate">{name}</span>
+              </label>
+            ))}
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-black">Row range {lo.sheetRowCount > 0 && <span className="font-normal text-gray-500">({lo.sheetRowCount} rows)</span>}</p>
+              {(lo.rowFrom || lo.rowTo) && (
+                <button onClick={() => onRangeChange("", "")} className="text-sm text-gray-400 hover:text-black flex items-center gap-1">
+                  <RotateCcw className="w-3 h-3" />All rows
+                </button>
+              )}
+            </div>
+            <div className="flex gap-3">
+              {[{ label: "From", val: lo.rowFrom, ph: "1" }, { label: "To", val: lo.rowTo, ph: lo.sheetRowCount ? String(lo.sheetRowCount) : "last" }].map(({ label, val, ph }, i) => (
+                <div key={i} className="flex-1 space-y-1">
+                  <p className="text-xs text-gray-500">{label} row</p>
+                  <input type="number" min={1} placeholder={ph} value={val}
+                    onChange={e => onRangeChange(i === 0 ? e.target.value : lo.rowFrom, i === 1 ? e.target.value : lo.rowTo)}
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {lo.error && <ErrorBox message={lo.error} />}
+
+          <div className="flex gap-2">
+            <button onClick={onConfirmSheet} disabled={lo.applyingSheet || !lo.selectedSheet}
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-black text-white text-sm font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
+              {lo.applyingSheet ? <><Spin />Parsing…</> : <><ArrowRight className="w-3.5 h-3.5" />Use selected sheet</>}
+            </button>
+            <button onClick={onAutoDetect} disabled={lo.applyingSheet}
+              className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors whitespace-nowrap">
+              Auto-detect
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── DataFileRow ───────────────────────────────────────────────────────────────
+
+function DataFileRow({ df, readyLayouts, onAssign, onTogglePreview, onProcess, onRemove }: {
+  df: DataFile;
+  readyLayouts: LayoutEntry[];
+  onAssign: (layoutId: string) => void;
+  onTogglePreview: () => void;
+  onProcess: () => void;
+  onRemove: () => void;
+}) {
+  const assignedLayout = readyLayouts.find(l => l.id === df.layoutId);
+  const canProcess = !!assignedLayout && df.lineCount > 0 && !df.activated;
+
+  return (
+    <div className={`border rounded-xl overflow-hidden ${df.activated ? "border-emerald-200" : df.error ? "border-red-200" : "border-gray-200"}`}>
+      {/* Main row */}
+      <div className={`flex items-center gap-3 px-4 py-3 ${df.activated ? "bg-emerald-50" : "bg-white"}`}>
+        {df.lineCount > 0
+          ? <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+          : df.error
+          ? <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
+          : <Spin />}
+
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-black truncate">{df.fileName}</p>
+          {df.lineCount > 0 && <p className="text-xs text-gray-500">{df.lineCount.toLocaleString()} records</p>}
+          {df.error && <p className="text-xs text-red-600 truncate">{df.error}</p>}
+        </div>
+
+        {/* Layout assignment dropdown */}
+        {df.lineCount > 0 && (
+          <div className="relative flex-shrink-0">
+            <select
+              value={df.layoutId}
+              onChange={e => onAssign(e.target.value)}
+              className={`appearance-none text-xs font-medium px-2.5 py-1.5 pr-7 rounded-lg border cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500 ${df.layoutId ? "border-blue-300 bg-blue-50 text-blue-800" : "border-gray-200 bg-white text-gray-500"}`}>
+              <option value="">— assign layout —</option>
+              {readyLayouts.map(lo => (
+                <option key={lo.id} value={lo.id}>
+                  {lo.result?.sheetName
+                    ? `${lo.fileName} (${lo.result.sheetName}${lo.rowFrom || lo.rowTo ? ` r${lo.rowFrom || 1}–${lo.rowTo || "end"}` : ""})`
+                    : `${lo.fileName} · ${lo.result!.fields.length}f`}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-500 pointer-events-none" />
+          </div>
+        )}
+
+        {/* Preview toggle */}
+        {df.preview.length > 0 && (
+          <button onClick={onTogglePreview}
+            className="flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg border border-gray-200 text-gray-500 hover:text-black hover:border-gray-400 transition-colors flex-shrink-0">
+            <Eye className="w-3.5 h-3.5" />
+            {df.showPreview ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+          </button>
+        )}
+
+        {/* Process button */}
+        {canProcess && (
+          <button onClick={onProcess}
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-black text-white hover:bg-gray-800 transition-colors flex-shrink-0 whitespace-nowrap">
+            <ArrowRight className="w-3.5 h-3.5" />Process
+          </button>
+        )}
+        {df.activated && (
+          <span className="text-xs font-semibold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-lg flex-shrink-0 whitespace-nowrap">Active ↓</span>
+        )}
+
+        <button onClick={onRemove} className="text-gray-400 hover:text-black flex-shrink-0"><X className="w-4 h-4" /></button>
+      </div>
+
+      {/* Preview table (expandable) */}
+      {df.showPreview && df.preview.length > 0 && assignedLayout?.result && (
+        <div className="border-t border-gray-100 overflow-auto max-h-40">
+          <table className="w-full text-xs border-collapse">
+            <thead className="bg-gray-50 sticky top-0">
+              <tr>
+                {assignedLayout.result.fields.map(f => (
+                  <th key={f.srlNo} className="px-2.5 py-1.5 text-left font-semibold text-gray-500 border-r border-gray-200 whitespace-nowrap">{f.varName}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {df.preview.map((row, ri) => (
+                <tr key={ri} className="border-t border-gray-100 hover:bg-gray-50">
+                  {row.map((cell, ci) => (
+                    <td key={ci} className="px-2.5 py-1 font-mono border-r border-gray-100 whitespace-nowrap text-black">
+                      {cell || <span className="text-gray-300 italic">—</span>}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -755,23 +938,11 @@ function SideBySideModal({ loading, data, totalRows, leftLabel = "Original", rig
 }) {
   const [search, setSearch] = useState("");
 
-  // Close on Escape key
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  const filteredHeaders = data
-    ? (search.trim() ? data.headers.filter((h) => h.toLowerCase().includes(search.trim().toLowerCase())) : data.headers)
-    : [];
-  const filteredIdxs = data
-    ? data.headers.map((h, i) => ({ h, i })).filter(({ h }) => !search.trim() || h.toLowerCase().includes(search.trim().toLowerCase())).map(({ i }) => i)
-    : [];
+  const filteredHeaders = data ? (search.trim() ? data.headers.filter(h => h.toLowerCase().includes(search.trim().toLowerCase())) : data.headers) : [];
+  const filteredIdxs = data ? data.headers.map((h, i) => ({ h, i })).filter(({ h }) => !search.trim() || h.toLowerCase().includes(search.trim().toLowerCase())).map(({ i }) => i) : [];
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-white" style={{ fontFamily: "'Poppins', sans-serif" }}>
-      {/* Header */}
       <div className="flex items-center gap-4 px-6 py-4 border-b border-gray-200 bg-white flex-shrink-0">
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <Columns2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
@@ -779,29 +950,20 @@ function SideBySideModal({ loading, data, totalRows, leftLabel = "Original", rig
             <h2 className="text-lg font-semibold text-black leading-tight">Original vs Anonymized</h2>
             <p className="text-sm text-gray-500">
               {data ? `Showing ${data.original.length.toLocaleString()} of ${totalRows.toLocaleString()} rows · ${data.headers.length} columns` : "Loading…"}
-              {totalRows > 500 && data && <span className="ml-1 text-amber-600">(preview capped at 500 rows)</span>}
+              {totalRows > 500 && data && <span className="ml-1 text-amber-600">(capped at 500 rows)</span>}
             </p>
           </div>
         </div>
         <div className="relative w-64 flex-shrink-0">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-          <input
-            type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter columns…"
-            className="w-full pl-9 pr-4 py-2 text-sm rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-black"
-          />
+          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Filter columns…"
+            className="w-full pl-9 pr-4 py-2 text-sm rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-black" />
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 text-sm">
-          <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 font-medium">
-            <span className="w-3 h-3 rounded-sm bg-amber-300 inline-block" />Changed
-          </span>
-          <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 font-medium">
-            <span className="w-3 h-3 rounded-sm bg-white border border-gray-300 inline-block" />Unchanged
-          </span>
+          <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 font-medium"><span className="w-3 h-3 rounded-sm bg-amber-300 inline-block" />Changed</span>
+          <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 font-medium"><span className="w-3 h-3 rounded-sm bg-white border border-gray-300 inline-block" />Unchanged</span>
         </div>
-        <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-black transition-colors flex-shrink-0">
-          <X className="w-5 h-5" />
-        </button>
+        <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-black transition-colors flex-shrink-0"><X className="w-5 h-5" /></button>
       </div>
 
       {loading && (
@@ -813,86 +975,48 @@ function SideBySideModal({ loading, data, totalRows, leftLabel = "Original", rig
 
       {!loading && data && (
         <div className="flex-1 flex min-h-0 divide-x divide-gray-200">
-          {/* Left pane */}
-          <div className="flex-1 flex flex-col min-w-0">
-            <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 flex items-center gap-2 flex-shrink-0">
-              <span className="text-sm font-semibold text-black">{leftLabel}</span>
-              <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full">{data.original.length.toLocaleString()} rows</span>
-            </div>
-            <div className="flex-1 overflow-auto">
-              <table className="text-xs border-collapse w-max min-w-full">
-                <thead className="sticky top-0 bg-gray-50 z-10">
-                  <tr>
-                    <th className="sticky left-0 bg-gray-50 px-3 py-2 text-left font-semibold text-gray-500 border-r border-b border-gray-200 whitespace-nowrap">#</th>
-                    {filteredHeaders.map((h) => (
-                      <th key={h} className="px-3 py-2 text-left font-semibold text-gray-500 border-r border-b border-gray-200 whitespace-nowrap">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.original.map((row, ri) => (
-                    <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
-                      <td className="sticky left-0 px-3 py-1.5 text-gray-400 font-mono border-r border-gray-100 whitespace-nowrap" style={{ background: ri % 2 === 0 ? "white" : "rgb(249 250 251 / 0.5)" }}>{ri + 1}</td>
-                      {filteredIdxs.map((ci) => {
-                        const origVal = row[ci] ?? "";
-                        const anonVal = data.anonymized[ri]?.[ci] ?? "";
-                        const changed = origVal !== anonVal;
-                        return (
-                          <td key={ci} className={`px-3 py-1.5 font-mono border-r border-gray-100 whitespace-nowrap ${changed ? "bg-amber-50 text-amber-900" : ""}`}>
-                            {origVal || <span className="text-gray-300">—</span>}
-                          </td>
-                        );
-                      })}
+          {[{ label: leftLabel, rows: data.original, bg: "bg-gray-50", hBg: "bg-gray-50", hText: "text-gray-500" }, { label: rightLabel, rows: data.anonymized, bg: "bg-emerald-50", hBg: "bg-emerald-50/80 backdrop-blur-sm", hText: "text-emerald-700" }].map(({ label, rows, bg, hBg, hText }, side) => (
+            <div key={side} className="flex-1 flex flex-col min-w-0">
+              <div className={`px-4 py-2.5 ${bg} border-b border-gray-200 flex items-center gap-2 flex-shrink-0`}>
+                <span className={`text-sm font-semibold ${side === 0 ? "text-black" : "text-emerald-800"}`}>{label}</span>
+                <span className={`text-xs px-2 py-0.5 rounded-full ${side === 0 ? "bg-gray-200 text-gray-600" : "bg-emerald-100 text-emerald-700"}`}>{rows.length.toLocaleString()} rows</span>
+              </div>
+              <div className="flex-1 overflow-auto">
+                <table className="text-xs border-collapse w-max min-w-full">
+                  <thead className={`sticky top-0 ${hBg} z-10`}>
+                    <tr>
+                      <th className={`sticky left-0 ${side === 0 ? "bg-gray-50" : "bg-emerald-50"} px-3 py-2 text-left font-semibold ${hText} border-r border-b border-gray-200 whitespace-nowrap`}>#</th>
+                      {filteredHeaders.map(h => <th key={h} className={`px-3 py-2 text-left font-semibold ${hText} border-r border-b border-gray-200 whitespace-nowrap`}>{h}</th>)}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Right pane */}
-          <div className="flex-1 flex flex-col min-w-0">
-            <div className="px-4 py-2.5 bg-emerald-50 border-b border-gray-200 flex items-center gap-2 flex-shrink-0">
-              <span className="text-sm font-semibold text-emerald-800">{rightLabel}</span>
-              <span className="text-xs text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">{data.anonymized.length.toLocaleString()} rows</span>
-            </div>
-            <div className="flex-1 overflow-auto">
-              <table className="text-xs border-collapse w-max min-w-full">
-                <thead className="sticky top-0 bg-emerald-50/80 z-10 backdrop-blur-sm">
-                  <tr>
-                    <th className="sticky left-0 bg-emerald-50 px-3 py-2 text-left font-semibold text-emerald-700 border-r border-b border-gray-200 whitespace-nowrap">#</th>
-                    {filteredHeaders.map((h) => (
-                      <th key={h} className="px-3 py-2 text-left font-semibold text-emerald-700 border-r border-b border-gray-200 whitespace-nowrap">{h}</th>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, ri) => (
+                      <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
+                        <td className="sticky left-0 px-3 py-1.5 text-gray-400 font-mono border-r border-gray-100 whitespace-nowrap" style={{ background: ri % 2 === 0 ? "white" : "rgb(249 250 251 / 0.5)" }}>{ri + 1}</td>
+                        {filteredIdxs.map(ci => {
+                          const origVal = data.original[ri]?.[ci] ?? "";
+                          const anonVal = data.anonymized[ri]?.[ci] ?? "";
+                          const changed = origVal !== anonVal;
+                          return (
+                            <td key={ci} className={`px-3 py-1.5 font-mono border-r border-gray-100 whitespace-nowrap ${changed ? (side === 0 ? "bg-amber-50 text-amber-900" : "bg-amber-100 text-amber-900 font-semibold") : ""}`}>
+                              {row[ci] || <span className="text-gray-300">—</span>}
+                            </td>
+                          );
+                        })}
+                      </tr>
                     ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.anonymized.map((row, ri) => (
-                    <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
-                      <td className="sticky left-0 px-3 py-1.5 text-gray-400 font-mono border-r border-gray-100 whitespace-nowrap" style={{ background: ri % 2 === 0 ? "white" : "rgb(249 250 251 / 0.5)" }}>{ri + 1}</td>
-                      {filteredIdxs.map((ci) => {
-                        const origVal = data.original[ri]?.[ci] ?? "";
-                        const anonVal = row[ci] ?? "";
-                        const changed = origVal !== anonVal;
-                        return (
-                          <td key={ci} className={`px-3 py-1.5 font-mono border-r border-gray-100 whitespace-nowrap ${changed ? "bg-amber-100 text-amber-900 font-semibold" : ""}`}>
-                            {anonVal || <span className="text-gray-300">—</span>}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-// ── Key Settings ──────────────────────────────────────────────────────────────
+// ── KeySettings ───────────────────────────────────────────────────────────────
 
 function KeySettings({ keyMode, setKeyMode, seed, setSeed, passphrase, setPassphrase, pbkdf2Iter, setPbkdf2Iter, deterministic, setDeterministic, keyHexInput, setKeyHexInput }: {
   keyMode: "random" | "pbkdf2" | "hex"; setKeyMode: (m: "random" | "pbkdf2" | "hex") => void;
@@ -907,7 +1031,7 @@ function KeySettings({ keyMode, setKeyMode, seed, setSeed, passphrase, setPassph
       <div className="space-y-3">
         <p className="text-sm font-semibold text-black flex items-center gap-2"><Key className="w-4 h-4" />Key derivation</p>
         <div className="space-y-2">
-          {(["random", "pbkdf2", "hex"] as const).map((m) => (
+          {(["random", "pbkdf2", "hex"] as const).map(m => (
             <label key={m} className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border cursor-pointer text-sm transition-colors ${keyMode === m ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500"}`}>
               <input type="radio" name="keymode" checked={keyMode === m} onChange={() => setKeyMode(m)} className="accent-blue-600" />
               {m === "random" ? "Random (seed)" : m === "pbkdf2" ? "PBKDF2 passphrase" : "Paste hex key"}
@@ -920,24 +1044,24 @@ function KeySettings({ keyMode, setKeyMode, seed, setSeed, passphrase, setPassph
         <p className="text-sm font-semibold text-black">{keyMode === "random" ? "Key seed" : keyMode === "pbkdf2" ? "Passphrase" : "256-bit hex key"}</p>
         {keyMode === "random" && (
           <>
-            <input type="number" value={seed} onChange={(e) => setSeed(Number(e.target.value))}
+            <input type="number" value={seed} onChange={e => setSeed(Number(e.target.value))}
               className="w-full px-3 py-2.5 text-sm font-mono rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" />
             <p className="text-sm text-gray-500">Same seed → same key (reproducible)</p>
           </>
         )}
         {keyMode === "pbkdf2" && (
           <div className="space-y-3">
-            <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} placeholder="Enter passphrase…"
+            <input type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} placeholder="Enter passphrase…"
               className="w-full px-3 py-2.5 text-sm rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" />
             <div>
               <p className="text-sm text-gray-500 mb-1">Iterations: {pbkdf2Iter.toLocaleString()}</p>
-              <input type="range" min={10000} max={500000} step={10000} value={pbkdf2Iter} onChange={(e) => setPbkdf2Iter(Number(e.target.value))} className="w-full accent-blue-600" />
+              <input type="range" min={10000} max={500000} step={10000} value={pbkdf2Iter} onChange={e => setPbkdf2Iter(Number(e.target.value))} className="w-full accent-blue-600" />
             </div>
           </div>
         )}
         {keyMode === "hex" && (
           <div className="space-y-2">
-            <textarea value={keyHexInput} onChange={(e) => setKeyHexInput(e.target.value)} placeholder="Paste 64-char hex key…" rows={2}
+            <textarea value={keyHexInput} onChange={e => setKeyHexInput(e.target.value)} placeholder="Paste 64-char hex key…" rows={2}
               className={`w-full px-3 py-2.5 text-xs font-mono rounded-xl border bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none text-black ${keyHexInput && keyHexInput.trim().length !== 64 ? "border-red-400" : "border-gray-200"}`} />
             <p className={`text-sm ${keyHexInput.trim().length === 64 ? "text-emerald-600" : "text-gray-500"}`}>
               {keyHexInput.trim().length === 64 ? "✓ Valid 256-bit key" : `${keyHexInput.trim().length}/64 hex chars`}
@@ -948,7 +1072,7 @@ function KeySettings({ keyMode, setKeyMode, seed, setSeed, passphrase, setPassph
 
       <div className="space-y-3">
         <label className={`flex items-start gap-3 px-4 py-3 rounded-xl border cursor-pointer text-sm transition-colors ${deterministic ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500"}`}>
-          <input type="checkbox" checked={deterministic} onChange={(e) => setDeterministic(e.target.checked)} className="accent-blue-600 w-4 h-4 mt-0.5 flex-shrink-0" />
+          <input type="checkbox" checked={deterministic} onChange={e => setDeterministic(e.target.checked)} className="accent-blue-600 w-4 h-4 mt-0.5 flex-shrink-0" />
           <div>
             <p className="font-semibold">Deterministic mode</p>
             <p className="text-xs mt-1 opacity-70">Same value → same output. Required for consistent round-trip.</p>
@@ -964,14 +1088,11 @@ function KeySettings({ keyMode, setKeyMode, seed, setSeed, passphrase, setPassph
   );
 }
 
-// ── Column selector ───────────────────────────────────────────────────────────
+// ── ColSelector ───────────────────────────────────────────────────────────────
 
 function ColSelector({ allCols, selected, onChange, label }: { allCols: string[]; selected: Set<string>; onChange: (s: Set<string>) => void; label: string }) {
   const [query, setQuery] = useState("");
-  const filtered = query.trim()
-    ? allCols.filter((c) => c.toLowerCase().includes(query.trim().toLowerCase()))
-    : allCols;
-
+  const filtered = query.trim() ? allCols.filter(c => c.toLowerCase().includes(query.trim().toLowerCase())) : allCols;
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -983,26 +1104,17 @@ function ColSelector({ allCols, selected, onChange, label }: { allCols: string[]
       </div>
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search columns…"
-          className="w-full pl-9 pr-4 py-2.5 text-sm rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black placeholder:text-gray-400"
-        />
-        {query && (
-          <button onClick={() => setQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black">
-            <X className="w-3.5 h-3.5" />
-          </button>
-        )}
+        <input type="text" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search columns…"
+          className="w-full pl-9 pr-4 py-2.5 text-sm rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black placeholder:text-gray-400" />
+        {query && <button onClick={() => setQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black"><X className="w-3.5 h-3.5" /></button>}
       </div>
       {filtered.length === 0 ? (
         <p className="text-sm text-gray-400 text-center py-4">No columns match "{query}"</p>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2 max-h-52 overflow-y-auto pr-1 pt-1">
-          {filtered.map((col) => (
+          {filtered.map(col => (
             <label key={col} className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer text-sm transition-colors ${selected.has(col) ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500 hover:text-black"}`}>
-              <input type="checkbox" checked={selected.has(col)} onChange={(e) => { const n = new Set(selected); if (e.target.checked) n.add(col); else n.delete(col); onChange(n); }} className="accent-blue-600 w-3.5 h-3.5 flex-shrink-0" />
+              <input type="checkbox" checked={selected.has(col)} onChange={e => { const n = new Set(selected); if (e.target.checked) n.add(col); else n.delete(col); onChange(n); }} className="accent-blue-600 w-3.5 h-3.5 flex-shrink-0" />
               <span className="truncate font-mono text-xs">{col}</span>
             </label>
           ))}
@@ -1012,7 +1124,7 @@ function ColSelector({ allCols, selected, onChange, label }: { allCols: string[]
   );
 }
 
-// ── Small reusable components ─────────────────────────────────────────────────
+// ── Small components ──────────────────────────────────────────────────────────
 
 function ProgressBar({ pct, label, icon }: { pct: number; label: string; icon?: React.ReactNode }) {
   return (
@@ -1039,15 +1151,19 @@ function StepBadge({ n, label, active, done }: { n: number; label: string; activ
   );
 }
 
-function DropZone({ accept, icon, label, sublabel, inputRef, onFile }: { accept: string; icon: React.ReactNode; label: string; sublabel: string; inputRef: React.RefObject<HTMLInputElement | null>; onFile: (f: File) => void }) {
+function DropZone({ accept, multiple, icon, label, sublabel, inputRef, onFiles }: {
+  accept: string; multiple?: boolean; icon: React.ReactNode; label: string; sublabel: string;
+  inputRef: React.RefObject<HTMLInputElement | null>; onFiles: (files: File[]) => void;
+}) {
   const [dragging, setDragging] = useState(false);
   return (
     <div className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all ${dragging ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-blue-400 hover:bg-gray-50"}`}
-      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragOver={e => { e.preventDefault(); setDragging(true); }}
       onDragLeave={() => setDragging(false)}
-      onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) onFile(f); }}
+      onDrop={e => { e.preventDefault(); setDragging(false); const f = Array.from(e.dataTransfer.files); if (f.length) onFiles(f); }}
       onClick={() => inputRef.current?.click()}>
-      <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ""; }} />
+      <input ref={inputRef} type="file" accept={accept} multiple={multiple} className="hidden"
+        onChange={e => { const f = Array.from(e.target.files ?? []); if (f.length) onFiles(f); e.target.value = ""; }} />
       <div className="flex flex-col items-center gap-4">
         <div className="flex items-center justify-center">{icon}</div>
         <div>
@@ -1073,12 +1189,6 @@ function InfoBadge({ icon, text }: { icon: React.ReactNode; text: string }) {
     <div className="flex items-center gap-2.5 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5 font-medium">
       {icon}<span>{text}</span>
     </div>
-  );
-}
-
-function WarnBox({ message }: { message: string }) {
-  return (
-    <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 font-medium">{message}</div>
   );
 }
 
