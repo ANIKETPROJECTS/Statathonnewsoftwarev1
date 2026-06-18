@@ -5,7 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Shield } from "lucide-react";
 import NotFound from "@/pages/not-found";
 import FWFConverter from "@/pages/FWFConverter";
-import RiskAssessment from "@/pages/RiskAssessment";
+import RiskAssessmentSingle from "@/pages/RiskAssessmentSingle";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,12 +18,14 @@ const queryClient = new QueryClient({
 
 function AppLayout() {
   const [location, navigate] = useLocation();
-  const onRisk = location.startsWith("/risk");
+  const onOriginal   = location.startsWith("/risk-assessment/original");
+  const onAnonymized = location.startsWith("/risk-assessment/anonymized");
+  const onRisk       = onOriginal || onAnonymized;
 
   return (
     <div className="min-h-screen bg-white">
       <header className="border-b border-gray-200 bg-white px-8 py-4">
-        <div className="max-w-[1400px] mx-auto flex items-center gap-3">
+        <div className="max-w-[1400px] mx-auto flex items-center gap-3 flex-wrap">
           <button onClick={() => navigate("/")} className="flex items-center gap-3 hover:opacity-80 transition-opacity">
             <img src={`${import.meta.env.BASE_URL}airavata-logo.png`} alt="Airavata logo" className="w-10 h-10 object-contain" />
             <div className="text-left">
@@ -34,16 +36,34 @@ function AppLayout() {
 
           <div className="flex-1" />
 
-          <button
-            onClick={() => navigate(onRisk ? "/" : "/risk-assessment")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-colors border ${
-              onRisk
-                ? "bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700"
-                : "border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100"
-            }`}>
-            <Shield className="w-4 h-4" />
-            Risk Assessment
-          </button>
+          {/* Risk Assessment nav — two split buttons */}
+          <div className="flex items-center gap-1">
+            <div className="flex items-center gap-0.5 border border-indigo-200 rounded-xl overflow-hidden bg-indigo-50">
+              <span className="flex items-center gap-1.5 pl-3 pr-2 py-2 text-xs font-bold text-indigo-500 select-none">
+                <Shield className="w-3.5 h-3.5" />Risk Assessment
+              </span>
+              <div className="w-px h-5 bg-indigo-200" />
+              <button
+                onClick={() => navigate("/risk-assessment/original")}
+                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-semibold transition-colors ${
+                  onOriginal
+                    ? "bg-blue-600 text-white"
+                    : "text-blue-700 hover:bg-blue-100"
+                }`}>
+                📄 Original File
+              </button>
+              <div className="w-px h-5 bg-indigo-200" />
+              <button
+                onClick={() => navigate("/risk-assessment/anonymized")}
+                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-semibold transition-colors ${
+                  onAnonymized
+                    ? "bg-purple-600 text-white"
+                    : "text-purple-700 hover:bg-purple-100"
+                }`}>
+                🔒 Anonymized File
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -51,10 +71,52 @@ function AppLayout() {
         <Switch>
           <Route path="/" component={FWFConverter} />
           <Route path="/fwf" component={FWFConverter} />
-          <Route path="/risk-assessment" component={RiskAssessment} />
+          <Route path="/risk-assessment/original">
+            {() => <RiskAssessmentSingle mode="original" />}
+          </Route>
+          <Route path="/risk-assessment/anonymized">
+            {() => <RiskAssessmentSingle mode="anonymized" />}
+          </Route>
+          <Route path="/risk-assessment">
+            {() => <RiskAssessmentLanding navigate={navigate} />}
+          </Route>
           <Route component={NotFound} />
         </Switch>
       </main>
+    </div>
+  );
+}
+
+function RiskAssessmentLanding({ navigate }: { navigate: (to: string) => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-8">
+      <div className="text-center space-y-2">
+        <div className="w-14 h-14 rounded-2xl bg-indigo-600 flex items-center justify-center mx-auto">
+          <Shield className="w-7 h-7 text-white" />
+        </div>
+        <h1 className="text-2xl font-bold text-black mt-4">Risk Assessment</h1>
+        <p className="text-sm text-gray-500">Choose a dataset type to evaluate re-identification risk</p>
+      </div>
+      <div className="flex gap-6 flex-wrap justify-center">
+        <button
+          onClick={() => navigate("/risk-assessment/original")}
+          className="flex flex-col items-center gap-3 w-56 p-8 border-2 border-blue-200 rounded-2xl bg-blue-50 hover:bg-blue-100 hover:border-blue-400 transition-all text-left group">
+          <span className="text-4xl">📄</span>
+          <div>
+            <p className="font-bold text-blue-800 text-base">Original File</p>
+            <p className="text-xs text-blue-600 mt-1">Analyse the unmodified source dataset for re-identification risk</p>
+          </div>
+        </button>
+        <button
+          onClick={() => navigate("/risk-assessment/anonymized")}
+          className="flex flex-col items-center gap-3 w-56 p-8 border-2 border-purple-200 rounded-2xl bg-purple-50 hover:bg-purple-100 hover:border-purple-400 transition-all text-left group">
+          <span className="text-4xl">🔒</span>
+          <div>
+            <p className="font-bold text-purple-800 text-base">Anonymized File</p>
+            <p className="text-xs text-purple-600 mt-1">Validate that the privacy-protected dataset meets your risk threshold</p>
+          </div>
+        </button>
+      </div>
     </div>
   );
 }
